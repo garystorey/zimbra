@@ -1,0 +1,41 @@
+# =============================================================================
+# Talking Head Video Generator — Pinned Dependencies
+# =============================================================================
+# DO NOT install directly with `pip install -r requirements.txt`.
+# Use install.bat (Windows) or install.py instead — they handle the correct
+# install order to avoid dependency conflicts between Chatterbox and InfiniteTalk.
+# =============================================================================
+
+# --- InfiniteTalk dependencies (excluding gradio, mlflow, dashscope, kokoro) ---
+opencv-python>=4.9.0.80
+diffusers>=0.31.0
+transformers>=4.49.0,<5
+tokenizers>=0.20.3
+accelerate>=1.1.1
+tqdm
+imageio
+easydict
+ftfy
+imageio-ffmpeg
+scikit-image
+loguru
+numpy==1.26.4
+xfuser==0.4.1
+pyloudnorm
+optimum-quanto==0.2.6
+scenedetect
+moviepy==1.0.3
+decord
+einops
+soundfile
+huggingface_hub
+rich
+
+# --- Chatterbox unique deps (installed separately after --no-deps) ---
+# librosa
+# spacy-pkuseg==1.0.1
+# s3tokenizer
+# conformer
+# resemble-perth
+# safetensors==0.5.3
+# pykakasi

@@ -1,0 +1,59 @@
+# Virtual environment
+venv/
+.venv/
+
+# Model weights (large, downloaded at runtime)
+models/
+
+# Generated outputs
+outputs/
+
+# Vendored repos (cloned at install)
+vendor/
+
+# Python bytecode & caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Distribution / packaging
+*.egg-info/
+*.egg
+dist/
+build/
+eggs/
+sdist/
+wheels/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Environments
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Jupyter
+.ipynb_checkpoints/
+
+# pytest / coverage
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+
+# mypy
+.mypy_cache/
