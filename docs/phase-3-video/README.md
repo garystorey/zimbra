@@ -37,8 +37,7 @@ video_path = engine.generate(
     image_path="inputs/images/portrait.png",
     audio_path="outputs/audio/speech.wav",
     size="infinitetalk-720",
-    sample_steps=40,
-    mode="streaming",
+    sample_steps=20,
     seed=42,
     output_path="outputs/video/custom.mp4",
 )
@@ -48,19 +47,26 @@ engine.unload_model()  # Frees GPU memory
 
 ## Key Parameters
 
-| Parameter           | Default              | Notes                                                        |
-| ------------------- | -------------------- | ------------------------------------------------------------ |
-| `image_path`        | required             | Portrait image (any art style, any aspect ratio)             |
-| `audio_path`        | required             | WAV audio file                                               |
-| `output_path`       | auto                 | Auto-generated timestamp path if not specified               |
-| `prompt`            | auto                 | Text prompt for video generation                             |
-| `size`              | `"infinitetalk-480"` | Resolution bucket (`infinitetalk-480` or `infinitetalk-720`) |
-| `sample_steps`      | `4` (LoRA) / `20`    | Denoising steps (4 with LoRA, 20 without)                    |
-| `mode`              | `"streaming"`        | `"streaming"` for long video, `"clip"` for single chunk      |
-| `motion_frame`      | `9`                  | Driven frame length for streaming mode                       |
-| `seed`              | `42`                 | Random seed for reproducibility                              |
-| `text_guide_scale`  | `1.0`                | Text CFG scale                                               |
-| `audio_guide_scale` | `4.0`                | Audio CFG scale                                              |
+`VideoEngine.generate()` signature:
+
+| Parameter          | Default                 | Notes                                                        |
+| ------------------ | ----------------------- | ------------------------------------------------------------ |
+| `image_path`       | required                | Portrait image (any art style, any aspect ratio)             |
+| `audio_path`       | required                | WAV audio file                                               |
+| `output_path`      | auto                    | Auto-generated timestamp path if not specified               |
+| `size`             | `"infinitetalk-480"`    | Resolution bucket (`infinitetalk-480` or `infinitetalk-720`) |
+| `sample_steps`     | `4` (LoRA) / `20`       | Denoising steps (4 with LoRA, 20 without)                    |
+| `seed`             | `42`                    | Random seed for reproducibility                              |
+| `animation_prompt` | default.txt / `_PROMPT` | Text describing animation style (re-encodes T5 if changed)   |
+
+Internal config values (not in `generate()` signature, set via `config.py`):
+
+| Config                    | Default       | Notes                                                   |
+| ------------------------- | ------------- | ------------------------------------------------------- |
+| `VIDEO_MODE`              | `"streaming"` | `"streaming"` for long video, `"clip"` for single chunk |
+| `VIDEO_MOTION_FRAME`      | `9`           | Driven frame length for streaming mode                  |
+| `VIDEO_TEXT_GUIDE_SCALE`  | `1.0`         | Text CFG scale                                          |
+| `VIDEO_AUDIO_GUIDE_SCALE` | `4.0`         | Audio CFG scale                                         |
 
 ## Model Weights
 

@@ -25,7 +25,24 @@ from rich.console import Console
 
 import config
 
-console = Console()
+
+_console = None
+
+
+def _get_console():
+    """Get a Console that writes to the real stderr (survives stdout redirect)."""
+    global _console
+    if _console is None:
+        import sys
+
+        _stderr = getattr(config, "_REAL_STDERR", sys.stderr)
+        _console = Console(file=_stderr)
+    return _console
+
+
+def _is_verbose():
+    """True when --verbose is active."""
+    return getattr(config, "_VERBOSE", False)
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +60,7 @@ def _download_file(url, dest_path, desc=None):
     if desc is None:
         desc = os.path.basename(dest_path)
 
-    console.print(f"  Downloading: [cyan]{desc}[/cyan]")
+    _get_console().print(f"  Downloading: [cyan]{desc}[/cyan]")
 
     fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(dest_path))
     os.close(fd)
@@ -59,6 +76,7 @@ def _download_file(url, dest_path, desc=None):
             DownloadColumn(),
             TransferSpeedColumn(),
             TimeRemainingColumn(),
+            console=_get_console(),
         ) as progress:
             task = progress.add_task(desc, total=total_size if total_size > 0 else None)
 
@@ -108,16 +126,18 @@ def _hf_snapshot_download(
             os.path.isfile(os.path.join(local_dir, f)) for f in marker_files
         )
         if all_present:
-            console.print(f"  [green]Already downloaded:[/green] {repo_id}")
+            if _is_verbose():
+                _get_console().print(f"  [green]Already downloaded:[/green] {repo_id}")
             return local_dir
     elif os.path.isdir(local_dir) and any(os.scandir(local_dir)):
-        console.print(f"  [green]Already downloaded:[/green] {repo_id}")
+        if _is_verbose():
+            _get_console().print(f"  [green]Already downloaded:[/green] {repo_id}")
         return local_dir
 
     if desc:
-        console.print(f"  Downloading: [cyan]{desc}[/cyan] from {repo_id}")
+        _get_console().print(f"  Downloading: [cyan]{desc}[/cyan] from {repo_id}")
     else:
-        console.print(f"  Downloading: [cyan]{repo_id}[/cyan]")
+        _get_console().print(f"  Downloading: [cyan]{repo_id}[/cyan]")
 
     try:
         from huggingface_hub import snapshot_download
@@ -135,7 +155,7 @@ def _hf_snapshot_download(
         snapshot_download(**kwargs)
         return local_dir
     except ImportError:
-        console.print(
+        _get_console().print(
             "[red]ERROR: huggingface_hub not installed. Run install.py first.[/red]"
         )
         raise
@@ -179,7 +199,8 @@ def ensure_infinitetalk_models():
         - assets/ (demo images)
         - quant_models/*_multi_*, *_int8_*, *_lora* (~120+ GB)
     """
-    console.print("\n[bold]Checking InfiniteTalk models...[/bold]")
+    if _is_verbose():
+        _get_console().print("\n[bold]Checking InfiniteTalk models...[/bold]")
 
     os.makedirs(config.INFINITETALK_MODELS_DIR, exist_ok=True)
 
@@ -219,7 +240,7 @@ def ensure_infinitetalk_models():
 
         safetensors_path = os.path.join(config.WAV2VEC_DIR, "model.safetensors")
         if not os.path.isfile(safetensors_path):
-            console.print(
+            _get_console().print(
                 "  Downloading: [cyan]wav2vec2 model.safetensors (PR branch)[/cyan]"
             )
             hf_hub_download(
@@ -229,11 +250,12 @@ def ensure_infinitetalk_models():
                 local_dir=config.WAV2VEC_DIR,
             )
         else:
-            console.print(
-                "  [green]Already downloaded:[/green] wav2vec2 model.safetensors"
-            )
+            if _is_verbose():
+                _get_console().print(
+                    "  [green]Already downloaded:[/green] wav2vec2 model.safetensors"
+                )
     except Exception as e:
-        console.print(
+        _get_console().print(
             f"  [yellow]Warning: Could not download wav2vec2 model.safetensors: {e}[/yellow]"
         )
 
@@ -255,7 +277,8 @@ def ensure_infinitetalk_models():
         ],
     )
 
-    console.print("[green]InfiniteTalk models: OK[/green]")
+    if _is_verbose():
+        _get_console().print("[green]InfiniteTalk models: OK[/green]")
     return {
         "wan_ckpt_dir": config.WAN_CKPT_DIR,
         "wav2vec_dir": config.WAV2VEC_DIR,
@@ -272,10 +295,13 @@ def ensure_lora_models():
     """
     lora_path = config.LIGHTX2V_LORA_PATH
     if os.path.isfile(lora_path):
-        console.print(f"  [green]Already downloaded:[/green] LightX2V LoRA")
+        if _is_verbose():
+            _get_console().print(f"  [green]Already downloaded:[/green] LightX2V LoRA")
         return lora_path
 
-    console.print("  Downloading: [cyan]LightX2V accelerator LoRA (~200 MB)[/cyan]")
+    _get_console().print(
+        "  Downloading: [cyan]LightX2V accelerator LoRA (~200 MB)[/cyan]"
+    )
     os.makedirs(config.LORA_DIR, exist_ok=True)
 
     try:
@@ -286,10 +312,14 @@ def ensure_lora_models():
             filename=config.LIGHTX2V_LORA_HF_FILE,
             local_dir=config.LORA_DIR,
         )
-        console.print(f"  [green]Downloaded:[/green] {config.LIGHTX2V_LORA_FILENAME}")
+        _get_console().print(
+            f"  [green]Downloaded:[/green] {config.LIGHTX2V_LORA_FILENAME}"
+        )
         return lora_path
     except Exception as e:
-        console.print(f"  [red]ERROR: Failed to download LightX2V LoRA: {e}[/red]")
+        _get_console().print(
+            f"  [red]ERROR: Failed to download LightX2V LoRA: {e}[/red]"
+        )
         raise
 
 
@@ -305,7 +335,8 @@ def ensure_chatterbox_models():
     Chatterbox uses `from_pretrained()` which handles its own HuggingFace
     download internally. We just verify the cache or trigger the download.
     """
-    console.print("\n[bold]Checking Chatterbox models...[/bold]")
+    if _is_verbose():
+        _get_console().print("\n[bold]Checking Chatterbox models...[/bold]")
 
     # Chatterbox handles its own download via from_pretrained().
     # We check if the HF cache already has the model to avoid
@@ -318,17 +349,23 @@ def ensure_chatterbox_models():
             repo.repo_id == config.CHATTERBOX_HF_REPO for repo in cache_info.repos
         )
         if chatterbox_cached:
-            console.print("  [green]Already cached:[/green] Chatterbox Turbo")
+            if _is_verbose():
+                _get_console().print(
+                    "  [green]Already cached:[/green] Chatterbox Turbo"
+                )
         else:
-            console.print(
+            if _is_verbose():
+                _get_console().print(
+                    "  [yellow]Chatterbox weights will be downloaded on first TTS call[/yellow]"
+                )
+    except Exception:
+        if _is_verbose():
+            _get_console().print(
                 "  [yellow]Chatterbox weights will be downloaded on first TTS call[/yellow]"
             )
-    except Exception:
-        console.print(
-            "  [yellow]Chatterbox weights will be downloaded on first TTS call[/yellow]"
-        )
 
-    console.print("[green]Chatterbox models: OK[/green]")
+    if _is_verbose():
+        _get_console().print("[green]Chatterbox models: OK[/green]")
 
 
 # ---------------------------------------------------------------------------
@@ -341,4 +378,5 @@ def ensure_all_models():
     config.ensure_directories()
     ensure_infinitetalk_models()
     ensure_chatterbox_models()
-    console.print("\n[bold green]All models ready.[/bold green]")
+    if _is_verbose():
+        _get_console().print("\n[bold green]All models ready.[/bold green]")

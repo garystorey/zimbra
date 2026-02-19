@@ -18,17 +18,20 @@ Key design: models run **sequentially** — TTS is fully unloaded (0 GB VRAM) be
 
 ### `generate.py` — CLI entry point
 
-Full `argparse`-based CLI with grouped options:
+Full `argparse`-based CLI:
 
-| Group             | Key flags                                                    |
-| ----------------- | ------------------------------------------------------------ |
-| **Input sources** | `--script`, `--script-file`, `--voice-ref`, `--image`        |
-| **Utility**       | `--download-only`, `--tts-only`, `--video-only`, `--verbose` |
+| Flag                  | Description                                       |
+| --------------------- | ------------------------------------------------- |
+| `--audio-only`        | Generate audio only (skip video)                  |
+| `--video-only AUDIO`  | Generate video from existing audio file           |
+| `--animation TEXT`    | Animation description (text or path to .txt file) |
+| `--verbose`           | Debug logging                                     |
+| `--blocks-to-swap N`  | DiT blocks to swap CPU↔GPU (default: auto-tune)   |
+| `--prefetch-blocks N` | Async prefetch N blocks ahead (default: 1)        |
 
 ### Utility modes
 
-- **`--download-only`** — Pre-fetch all model weights without running generation
-- **`--tts-only`** — Generate audio only (skip video)
+- **`--audio-only`** — Generate audio only (skip video)
 - **`--video-only AUDIO_PATH`** — Generate video from existing audio (skip TTS)
 - **`--verbose`** — Debug-level logging
 
@@ -39,6 +42,7 @@ Running `python generate.py` with no arguments uses:
 - `inputs/scripts/default.txt` for the script
 - `inputs/voice_ref/default.mp3` (or `.wav`) for voice cloning
 - `inputs/images/default.png` for the portrait image
+- `inputs/animation/default.txt` for the animation description
 - Auto-generated timestamped output paths in `outputs/audio/` and `outputs/video/`
 
 ## Files
@@ -52,6 +56,5 @@ Running `python generate.py` with no arguments uses:
 
 - `python generate.py --help` — exits 0, all options displayed correctly
 - All CLI defaults sourced from `config.py`
-- `--script` and `--script-file` are mutually exclusive
 - Input validation via `utils.py` (file existence, format checks)
 - Error handling with user-friendly messages for missing files, bad formats, keyboard interrupt

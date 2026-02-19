@@ -233,3 +233,83 @@ def get_image_dimensions(image_path):
 
     with Image.open(image_path) as img:
         return img.size  # (width, height)
+
+
+# ---------------------------------------------------------------------------
+# GPU thermal management
+# ---------------------------------------------------------------------------
+
+
+def get_gpu_temperature(gpu_index=0):
+    """Read GPU temperature in °C via nvidia-smi. Returns None on failure."""
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=temperature.gpu",
+                "--format=csv,noheader,nounits",
+                f"--id={gpu_index}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return int(result.stdout.strip().split("\n")[0])
+    except Exception:
+        pass
+    return None
+
+
+def thermal_cooldown(
+    threshold=config.GPU_THERMAL_THRESHOLD,
+    target=None,
+    max_wait=config.GPU_THERMAL_MAX_WAIT,
+    poll_interval=config.GPU_THERMAL_POLL_INTERVAL,
+    gpu_index=0,
+):
+    """Wait for GPU to cool below threshold before continuing.
+
+    Args:
+        threshold: Temperature (°C) above which we pause. Default from config.
+        target: Temperature to cool down to (default: threshold - 5).
+        max_wait: Maximum seconds to wait before giving up.
+        poll_interval: Seconds between temperature checks.
+        gpu_index: GPU device index.
+
+    Returns:
+        (waited_secs, start_temp, end_temp) or (0, temp, temp) if no wait needed.
+    """
+    import logging
+    import time
+
+    logger = logging.getLogger("utils")
+
+    if target is None:
+        target = threshold - 5
+
+    temp = get_gpu_temperature(gpu_index)
+    if temp is None:
+        return (0, None, None)
+
+    if temp <= threshold:
+        return (0, temp, temp)
+
+    logger.info(
+        f"[thermal] GPU at {temp}°C (threshold {threshold}°C), "
+        f"cooling to {target}°C (max {max_wait}s wait)..."
+    )
+
+    start_temp = temp
+    waited = 0.0
+    while temp > target and waited < max_wait:
+        time.sleep(poll_interval)
+        waited += poll_interval
+        temp = get_gpu_temperature(gpu_index)
+        if temp is None:
+            break
+
+    end_temp = temp if temp is not None else start_temp
+    if waited > 0:
+        logger.info(f"[thermal] Cooled {start_temp}°C → {end_temp}°C in {waited:.0f}s")
+    return (waited, start_temp, end_temp)

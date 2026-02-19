@@ -1,15 +1,11 @@
 @echo off
 REM ============================================================================
-REM Talking Head Video Generator — Run Pipeline
+REM Video Generator— Run Pipeline
 REM Activates the venv and passes all arguments to generate.py
 REM ============================================================================
 
-echo ============================================================
-echo   Talking Head Video Generator
-echo ============================================================
-echo.
 
-REM Check venv exists
+    
 if not exist ".\venv\Scripts\python.exe" (
     echo [ERROR] Virtual environment not found. Run install.bat first.
     echo.

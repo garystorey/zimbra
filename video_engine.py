@@ -161,7 +161,7 @@ def _apply_lora_to_model(model, lora_path, lora_scale=1.0):
             new_scale = (amax / 448.0).float()
             new_data = (fp_weight / new_scale).clamp(-448, 448).to(torch.float8_e4m3fn)
             param.data = new_data
-            parent.scale_weight = new_scale
+            parent.register_buffer("scale_weight", new_scale, persistent=False)
         else:
             # Regular float weight
             delta = delta.to(param.device, param.dtype)
@@ -242,12 +242,13 @@ class VideoEngine:
         self._loaded = False
         self._lora_applied = False
         self._cached_text_embeddings = None
+        self._cached_prompt = None
 
     @property
     def is_loaded(self):
         return self._loaded and self.pipe is not None
 
-    def _pre_encode_text(self):
+    def _pre_encode_text(self, prompt=None):
         """Pre-encode the text prompt on GPU while VRAM is free.
 
         FP8-quantized T5 on CPU is catastrophically slow (no FP8 hardware
@@ -256,7 +257,7 @@ class VideoEngine:
         The cached embeddings are stored on CPU and passed to
         generate_infinitetalk() to skip T5 entirely during generation.
         """
-        prompt = self._PROMPT
+        prompt = prompt or self._PROMPT
         n_prompt = self.pipe.sample_neg_prompt
 
         # Move T5 to GPU, encode both prompts together (matches vendor format),
@@ -275,6 +276,7 @@ class VideoEngine:
             context.cpu(),
             context_null.cpu(),
         )
+        self._cached_prompt = prompt
         logger.info("  T5 text embeddings pre-encoded and cached")
 
     def load_model(self):
@@ -358,7 +360,7 @@ class VideoEngine:
                     if param.dtype == torch.float32 and name != "scale_weight":
                         param.data = param.data.to(self.pipe.param_dtype)
                 for name, buf in module.named_buffers(recurse=False):
-                    if buf.dtype == torch.float32:
+                    if buf.dtype == torch.float32 and name != "scale_weight":
                         module._buffers[name] = buf.to(self.pipe.param_dtype)
             fp8_elapsed = time.time() - fp8_start
             logger.info(f"  Native FP8 weights loaded in {fp8_elapsed:.1f}s")
@@ -452,6 +454,38 @@ class VideoEngine:
         gc.collect()
         logger.info("InfiniteTalk unloaded, GPU memory freed")
 
+    def get_audio_duration(self, audio_path):
+        """Return the duration of an audio file in seconds."""
+        import librosa
+
+        speech_array, sr = librosa.load(audio_path, sr=config.VIDEO_SAMPLE_RATE)
+        return len(speech_array) / sr
+
+    def estimate_total_steps(self, audio_duration):
+        """Estimate total denoising steps for the full video.
+
+        Returns the total number of step callbacks that will fire during
+        generate(), accounting for streaming chunks.
+        """
+        frame_num = config.VIDEO_FRAME_NUM
+        motion_frame = config.VIDEO_MOTION_FRAME
+        if self._lora_applied:
+            sample_steps = config.VIDEO_LORA_SAMPLE_STEPS
+        else:
+            sample_steps = config.VIDEO_SAMPLE_STEPS
+
+        audio_frames = int(audio_duration * config.VIDEO_FPS) + 1
+        effective_max = max(audio_frames, frame_num)
+
+        if config.VIDEO_MODE == "streaming" and effective_max > frame_num:
+            num_chunks = 1 + math.ceil(
+                (effective_max - frame_num) / (frame_num - motion_frame)
+            )
+        else:
+            num_chunks = 1
+
+        return num_chunks * sample_steps
+
     def generate(
         self,
         image_path,
@@ -460,6 +494,8 @@ class VideoEngine:
         size=None,
         sample_steps=None,
         seed=None,
+        animation_prompt=None,
+        step_callback=None,
     ):
         """
         Generate a talking-head video from a portrait image and audio file.
@@ -473,6 +509,8 @@ class VideoEngine:
             size: Resolution bucket ("infinitetalk-480" or "infinitetalk-720").
             sample_steps: Number of denoising steps (default 20).
             seed: Random seed for reproducibility.
+            animation_prompt: Text describing the animation style. Falls back
+                to _PROMPT if None.
 
         Returns:
             Path to the generated MP4 video file.
@@ -489,7 +527,12 @@ class VideoEngine:
         mode = config.VIDEO_MODE
         motion_frame = config.VIDEO_MOTION_FRAME
         frame_num = config.VIDEO_FRAME_NUM
-        prompt = self._PROMPT
+        prompt = animation_prompt if animation_prompt else self._PROMPT
+
+        # Re-encode text embeddings if prompt changed from what was pre-cached
+        if self._cached_prompt != prompt:
+            logger.info("  Animation prompt differs from cached — re-encoding T5...")
+            self._pre_encode_text(prompt)
 
         if self._lora_applied:
             sample_steps = sample_steps or config.VIDEO_LORA_SAMPLE_STEPS
@@ -559,7 +602,7 @@ class VideoEngine:
         extra_args.use_teacache = False
         extra_args.teacache_thresh = 0.2
         extra_args.size = size
-        extra_args.use_apg = False
+        extra_args.use_apg = True
         extra_args.apg_momentum = -0.75
         extra_args.apg_norm_threshold = 55
         extra_args.scene_seg = False
@@ -585,25 +628,55 @@ class VideoEngine:
         )
         # --- ETA estimate ---
         if mode == "streaming" and effective_max > frame_num:
-            num_chunks = 1 + math.ceil((effective_max - frame_num) / motion_frame)
+            num_chunks = 1 + math.ceil(
+                (effective_max - frame_num) / (frame_num - motion_frame)
+            )
         else:
             num_chunks = 1
         total_denoise_steps = num_chunks * sample_steps
-        eta_secs = total_denoise_steps * config.VIDEO_SECS_PER_STEP
+        _skip_cfg = math.isclose(text_guide_scale, 1.0) and math.isclose(
+            audio_guide_scale, 1.0
+        )
+        _passes_per_step = (
+            1 if _skip_cfg else (2 if math.isclose(text_guide_scale, 1.0) else 3)
+        )
+        # VIDEO_SECS_PER_STEP is calibrated for 1 pass/step; scale by passes
+        _secs_per_step = config.VIDEO_SECS_PER_STEP * _passes_per_step
+        eta_secs = total_denoise_steps * _secs_per_step
         eta_m, eta_s = divmod(int(eta_secs), 60)
         eta_h, eta_m = divmod(eta_m, 60)
         eta_str = f"{eta_h}h {eta_m}m" if eta_h else f"{eta_m}m {eta_s}s"
         logger.info(
             f"Running InfiniteTalk: size={size}, "
             f"steps={sample_steps}, mode={mode}, seed={seed}, "
-            f"text_cfg={text_guide_scale}, audio_cfg={audio_guide_scale}"
+            f"text_cfg={text_guide_scale}, audio_cfg={audio_guide_scale}, "
+            f"passes/step={_passes_per_step}"
         )
         logger.info(
             f"  ETA ≈ {eta_str} "
             f"({num_chunks} chunk{'s' if num_chunks != 1 else ''} "
-            f"× {sample_steps} steps, "
-            f"~{config.VIDEO_SECS_PER_STEP}s/step)"
+            f"× {sample_steps} steps × {_passes_per_step} pass{'es' if _passes_per_step > 1 else ''}, "
+            f"~{_secs_per_step}s/step)"
         )
+        # Store step callback so the vendor denoising loop can call it
+        self.pipe._step_callback = step_callback
+
+        # Between-chunk callback: thermal cooldown + temperature logging
+        def _on_chunk_done(chunk_idx):
+            from utils import thermal_cooldown, get_gpu_temperature
+
+            waited, t_start, t_end = thermal_cooldown()
+            if waited > 0:
+                logger.info(
+                    f"  Thermal pause before chunk {chunk_idx}: "
+                    f"{t_start}°C → {t_end}°C ({waited:.0f}s)"
+                )
+            else:
+                t = get_gpu_temperature()
+                if t is not None:
+                    logger.info(f"  GPU temp before chunk {chunk_idx}: {t}°C")
+
+        self.pipe._chunk_callback = _on_chunk_done
         gen_start = time.time()
 
         video = self.pipe.generate_infinitetalk(
@@ -618,7 +691,7 @@ class VideoEngine:
             seed=seed,
             offload_model=True,
             max_frames_num=effective_max,
-            color_correction_strength=1.0,
+            color_correction_strength=0.3,
             extra_args=extra_args,
             pre_encoded_text=self._cached_text_embeddings,
         )
@@ -631,7 +704,7 @@ class VideoEngine:
         from wan.utils.multitalk_utils import save_video_ffmpeg
 
         save_file = output_path.replace(".mp4", "")
-        save_video_ffmpeg(video, save_file, [audio_path], high_quality_save=False)
+        save_video_ffmpeg(video, save_file, [audio_path], high_quality_save=True)
 
         # save_video_ffmpeg appends .mp4 to save_file
         generated_path = save_file + ".mp4"

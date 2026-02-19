@@ -38,14 +38,14 @@ engine.unload_model()  # Frees ~4 GB GPU memory
 
 ## Key Parameters
 
-| Parameter | Default | Notes |
-|-----------|---------|-------|
-| `voice_ref_path` | `None` | Path to reference WAV/MP3 (>5s). None = built-in voice |
-| `output_path` | auto | Auto-generated timestamp path if not specified |
-| `exaggeration` | `None` | Logged as warning in Turbo (not supported) |
-| `cfg_weight` | `None` | Logged as warning in Turbo (not supported) |
-| `temperature` | `0.8` | Sampling temperature |
-| `max_chunk_chars` | `250` | Max characters per chunk for long text |
+| Parameter         | Default | Notes                                                  |
+| ----------------- | ------- | ------------------------------------------------------ |
+| `voice_ref_path`  | `None`  | Path to reference WAV/MP3 (>5s). None = built-in voice |
+| `output_path`     | auto    | Auto-generated timestamp path if not specified         |
+| `exaggeration`    | `None`  | Logged as warning in Turbo (not supported)             |
+| `cfg_weight`      | `None`  | Logged as warning in Turbo (not supported)             |
+| `temperature`     | `0.8`   | Sampling temperature                                   |
+| `max_chunk_chars` | `250`   | Max characters per chunk for long text                 |
 
 ## Discoveries During Implementation
 
@@ -74,8 +74,7 @@ RESULTS: 9/9 passed, 0 failed
 
 ## Files
 
-| File | Purpose |
-|------|---------|
-| `tts_engine.py` | TTSEngine class, chunking, crossfade |
-| `tests/test_phase2_tts.py` | 9 verification tests |
-| `docs/phase-2-tts/README.md` | This document |
+| File                         | Purpose                              |
+| ---------------------------- | ------------------------------------ |
+| `tts_engine.py`              | TTSEngine class, chunking, crossfade |
+| `docs/phase-2-tts/README.md` | This document                        |

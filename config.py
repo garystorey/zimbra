@@ -24,9 +24,11 @@ VENDOR_DIR = os.path.join(PROJECT_ROOT, "vendor")
 VOICE_REF_DIR = os.path.join(INPUTS_DIR, "voice_ref")
 IMAGES_DIR = os.path.join(INPUTS_DIR, "images")
 SCRIPTS_DIR = os.path.join(INPUTS_DIR, "scripts")
+ANIMATION_DIR = os.path.join(INPUTS_DIR, "animation")
 
 AUDIO_OUTPUT_DIR = os.path.join(OUTPUTS_DIR, "audio")
 VIDEO_OUTPUT_DIR = os.path.join(OUTPUTS_DIR, "video")
+LOGS_DIR = os.path.join(OUTPUTS_DIR, "logs")
 
 INFINITETALK_MODELS_DIR = os.path.join(MODELS_DIR, "infinitetalk")
 CHATTERBOX_MODELS_DIR = os.path.join(MODELS_DIR, "chatterbox")
@@ -56,6 +58,7 @@ DEFAULT_VOICE_REF = _find_default_file(
 )
 DEFAULT_IMAGE = _find_default_file(IMAGES_DIR, "default", DEFAULT_IMAGE_EXTENSIONS)
 DEFAULT_SCRIPT_FILE = os.path.join(SCRIPTS_DIR, "default.txt")
+DEFAULT_ANIMATION_FILE = os.path.join(ANIMATION_DIR, "default.txt")
 
 
 # ---------------------------------------------------------------------------
@@ -91,11 +94,14 @@ VIDEO_LORA_SCALE = 1.0  # LoRA merge strength
 VIDEO_LORA_SAMPLE_STEPS = 4  # LightX2V distilled: only 4 steps needed
 VIDEO_LORA_SAMPLE_SHIFT = 2  # Lower shift for distilled model
 VIDEO_LORA_TEXT_GUIDE_SCALE = 1.0  # Must be 1.0 (no CFG) for distilled LoRA
-VIDEO_LORA_AUDIO_GUIDE_SCALE = 2.0  # Reduced audio CFG with LoRA
+VIDEO_LORA_AUDIO_GUIDE_SCALE = 1.0  # Audio CFG disabled for speed (1 pass/step instead of 2). Model still receives audio conditioning in the cond pass; CFG just amplifies it. LoRA is cfg_step_distill — designed for low/no guidance.
 
 # Time estimation (seconds per denoising step per chunk, for ETA display)
-# Calibrate this to your GPU. Default ~10s based on RTX 4090 Laptop 16GB w/ FP8 + block swap.
-VIDEO_SECS_PER_STEP = 10
+# Calibrate this to your GPU. Measured on RTX 4090 Laptop 16GB:
+# ~16s/step steady state, ~36s step 1 warmup. Average ~21s/step.
+# w/ FP8 + block swap (18 persistent / 22 swapped), 1 pass/step
+# (audio_guide_scale=1.0), 4 LoRA steps. Includes per-chunk overhead.
+VIDEO_SECS_PER_STEP = 21
 
 # Block swap settings (for 16GB GPUs)
 # None = auto-tune based on available VRAM. With native FP8 (torch._scaled_mm),
@@ -106,6 +112,14 @@ VIDEO_PREFETCH_BLOCKS = (
     1  # Async prefetch N blocks ahead (hides CPU→GPU transfer latency)
 )
 VIDEO_QUANT = "fp8"  # FP8 quantization (None to disable)
+
+# GPU thermal management — pause between chunks if GPU is too hot.
+# Laptop GPUs aggressively throttle clocks at high temps, causing 2-3x
+# slower block compute. A brief cooldown pause is faster than running
+# at throttled speeds for the entire next chunk.
+GPU_THERMAL_THRESHOLD = 75  # °C — pause if above this
+GPU_THERMAL_MAX_WAIT = 30  # Max seconds to wait for cooldown
+GPU_THERMAL_POLL_INTERVAL = 3  # Seconds between temp checks
 
 # Number of DiT blocks in the InfiniteTalk model (40 for 14B)
 VIDEO_NUM_DIT_BLOCKS = 40
@@ -235,12 +249,21 @@ def auto_tune_blocks_to_swap():
             0
         ).total_memory - torch.cuda.memory_allocated(0)
         # Reserve VRAM for denoising activations + CUDA allocator overhead.
-        # 41 frames at 480p needs ~5-6GB for attention/cross-attention/
-        # intermediates, plus ~2-3GB CUDA allocator overhead and fragmentation.
-        # Empirically: 5 persistent blocks (2.4GB) + 8.5GB reserve works well
-        # on 16GB. Too little reserve causes catastrophic VRAM thrashing.
-        activation_reserve = 8.5 * (1024**3)
-        usable_vram = max(0, free_vram - activation_reserve)
+        # During swap block compute, persistent blocks + 1 swap buffer + non-block
+        # params are on GPU simultaneously. Intermediates (qkv, attention, ffn) need
+        # ~3.5-4.0 GiB headroom. If total exceeds physical VRAM, Windows WDDM spills
+        # to shared GPU memory (system RAM via PCIe), causing 20-55x slowdowns
+        # (progressive within a single block: self_attn 2.5x → ffn 55x).
+        # With 7.0 GiB reserve: ~17 persistent + 1 swap = 8.96 GiB weights,
+        # leaving ~7.0 GiB headroom. Peak with intermediates ~11.5 GiB,
+        # well under 16 GiB — no WDDM spill even with allocator fragmentation.
+        activation_reserve = 7.0 * (1024**3)
+        # Reserve 1 swap buffer slot: during prefetch, one swapped block
+        # occupies GPU alongside the persistent blocks. Without this
+        # reservation, the swap slot eats into activation_reserve, causing
+        # VRAM thrashing (5-10s/block instead of 0.25s/block).
+        swap_buffer_reserve = VIDEO_BLOCK_SIZE_BYTES
+        usable_vram = max(0, free_vram - activation_reserve - swap_buffer_reserve)
         # Non-block params (embeddings, head, img_emb, audio_proj) ~500MB
         non_block_overhead = 500_000_000
         vram_for_blocks = max(0, usable_vram - non_block_overhead)
@@ -272,6 +295,7 @@ def ensure_directories():
     dirs = [
         AUDIO_OUTPUT_DIR,
         VIDEO_OUTPUT_DIR,
+        LOGS_DIR,
         INFINITETALK_MODELS_DIR,
         CHATTERBOX_MODELS_DIR,
         LORA_DIR,

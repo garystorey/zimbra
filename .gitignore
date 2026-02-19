@@ -1,6 +1,7 @@
 # Virtual environment
 venv/
 .venv/
+.windsurf
 
 # Model weights (large, downloaded at runtime)
 models/

@@ -258,6 +258,7 @@ class TTSEngine:
         cfg_weight=None,
         temperature=0.8,
         max_chunk_chars=250,
+        progress_callback=None,
     ):
         """
         Generate voice-cloned audio from text.
@@ -313,6 +314,8 @@ class TTSEngine:
                 temperature=temperature,
             )
             audio_segments.append(segment)
+            if progress_callback is not None:
+                progress_callback()
 
         # Stitch chunks with crossfade
         crossfade_samples = int(CROSSFADE_SECONDS * SAMPLE_RATE)

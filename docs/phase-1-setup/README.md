@@ -8,19 +8,20 @@ Scaffolded the project directory structure, created the install pipeline, and im
 
 ## Files Added
 
-| File                         | Purpose                                                                                                                                                                      |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.gitignore`                 | Excludes venv/, models/, outputs/, vendor/, **pycache**/, IDE files, OS files, etc.                                                                                          |
-| `requirements.txt`           | Pinned dependency list for InfiniteTalk deps (excludes gradio, mlflow, dashscope, kokoro). Chatterbox deps listed as comments — installed separately via `--no-deps`.        |
-| `install.bat`                | Windows one-click installer. Calls `install.py`.                                                                                                                             |
-| `install.py`                 | Cross-platform install script. Creates venv, installs deps in conflict-free order, clones InfiniteTalk, verifies imports.                                                    |
-| `config.py`                  | Central configuration: project paths, default input file resolution, GPU detection, FFmpeg discovery (env var → PATH → imageio-ffmpeg fallback), model HuggingFace repo IDs. |
-| `model_manager.py`           | Auto-download logic for all model weights. Uses `huggingface_hub.snapshot_download()` for InfiniteTalk/Wan2.1/wav2vec2. Atomic downloads with rich progress bars.            |
-| `utils.py`                   | File validation (audio/image format checks), MP3↔WAV conversion (librosa/soundfile for MP3→WAV, FFmpeg for WAV→MP3), FFmpeg helpers (mux, resize), image dimension reading.  |
-| `docs/plan.md`               | Copy of the full implementation plan.                                                                                                                                        |
-| `inputs/scripts/default.txt` | Default script text for CLI fallback.                                                                                                                                        |
-| `inputs/voice_ref/.gitkeep`  | Placeholder — user places their `default.wav` or `default.mp3` here.                                                                                                         |
-| `inputs/images/.gitkeep`     | Placeholder — user places their `default.png` here.                                                                                                                          |
+| File                           | Purpose                                                                                                                                                                      |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.gitignore`                   | Excludes venv/, models/, outputs/, vendor/, **pycache**/, IDE files, OS files, etc.                                                                                          |
+| `requirements.txt`             | Pinned dependency list for InfiniteTalk deps (excludes gradio, mlflow, dashscope, kokoro). Chatterbox deps listed as comments — installed separately via `--no-deps`.        |
+| `install.bat`                  | Windows one-click installer. Calls `install.py`.                                                                                                                             |
+| `install.py`                   | Cross-platform install script. Creates venv, installs deps in conflict-free order, clones InfiniteTalk, verifies imports.                                                    |
+| `config.py`                    | Central configuration: project paths, default input file resolution, GPU detection, FFmpeg discovery (env var → PATH → imageio-ffmpeg fallback), model HuggingFace repo IDs. |
+| `model_manager.py`             | Auto-download logic for all model weights. Uses `huggingface_hub.snapshot_download()` for InfiniteTalk/Wan2.1/wav2vec2. Atomic downloads with rich progress bars.            |
+| `utils.py`                     | File validation (audio/image format checks), MP3↔WAV conversion (librosa/soundfile for MP3→WAV, FFmpeg for WAV→MP3), FFmpeg helpers (mux, resize), image dimension reading.  |
+| `docs/plan.md`                 | Copy of the full implementation plan.                                                                                                                                        |
+| `inputs/scripts/default.txt`   | Default script text for CLI fallback.                                                                                                                                        |
+| `inputs/animation/default.txt` | Default animation description for video model.                                                                                                                               |
+| `inputs/voice_ref/.gitkeep`    | Placeholder — user places their `default.wav` or `default.mp3` here.                                                                                                         |
+| `inputs/images/.gitkeep`       | Placeholder — user places their `default.png` here.                                                                                                                          |
 
 ## Directories Created
 
@@ -29,6 +30,7 @@ Scaffolded the project directory structure, created the install pipeline, and im
 | `inputs/voice_ref/`    | Voice clone reference audio files | Yes (via .gitkeep)                    |
 | `inputs/images/`       | Portrait images                   | Yes (via .gitkeep)                    |
 | `inputs/scripts/`      | Text scripts                      | Yes (default.txt tracked)             |
+| `inputs/animation/`    | Animation descriptions            | Yes (default.txt tracked)             |
 | `outputs/audio/`       | TTS-generated audio               | No (gitignored, created at runtime)   |
 | `outputs/video/`       | Final talking-head videos         | No (gitignored, created at runtime)   |
 | `models/infinitetalk/` | InfiniteTalk model weights        | No (gitignored, auto-downloaded)      |

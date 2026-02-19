@@ -11,17 +11,25 @@ Inputs are read from the inputs/ folder:
     inputs/scripts/default.txt      Script text
     inputs/images/default.png       Portrait image
     inputs/voice_ref/default.mp3    Voice reference audio
+    inputs/animation/default.txt    Animation description
 """
 
 import os
+import sys
+import traceback
 
 # Triton is unavailable on Windows — disable torch.compile globally before
 # any torch imports so @torch.compile decorators in vendor code become no-ops.
 os.environ["TORCHDYNAMO_DISABLE"] = "1"
 
+# Suppress noisy triton traceback from xformers on Windows (no triton wheels).
+os.environ["XFORMERS_FORCE_DISABLE_TRITON"] = "1"
+
 import argparse
 import logging
-import sys
+
+# Suppress torio FFmpeg extension warnings (soundfile backend is used instead).
+logging.getLogger("torio").setLevel(logging.WARNING)
 
 import config
 
@@ -36,7 +44,8 @@ def build_parser():
             "Inputs are read from the inputs/ folder:\n"
             "  inputs/scripts/default.txt    Script text\n"
             "  inputs/images/default.png     Portrait image\n"
-            "  inputs/voice_ref/default.mp3  Voice reference audio"
+            "  inputs/voice_ref/default.mp3  Voice reference audio\n"
+            "  inputs/animation/default.txt  Animation description"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -54,41 +63,132 @@ def build_parser():
         help="Generate video from existing audio file (skip TTS)",
     )
     parser.add_argument(
+        "--animation",
+        type=str,
+        default=None,
+        metavar="TEXT_OR_FILE",
+        help=(
+            "Animation description for the video model. "
+            "Can be a text string or path to a .txt file. "
+            "Defaults to inputs/animation/default.txt"
+        ),
+    )
+    parser.add_argument(
+        "--audio-cfg",
+        type=float,
+        default=None,
+        metavar="SCALE",
+        help=(
+            "Audio guidance scale (default: 1.0 with LoRA, 4.0 without). "
+            "1.0 = fastest (1 pass/step, no audio CFG). "
+            "2.0-2.5 = stronger lip sync (2 passes/step, ~2x slower)."
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable verbose/debug logging",
-    )
-
-    # Block swap options
-    parser.add_argument(
-        "--blocks-to-swap",
-        type=int,
-        default=None,
-        metavar="N",
-        help="Number of DiT blocks to swap CPU↔GPU (default: auto-tune)",
-    )
-    parser.add_argument(
-        "--prefetch-blocks",
-        type=int,
-        default=None,
-        metavar="N",
-        help=f"Async prefetch N blocks ahead (default: {config.VIDEO_PREFETCH_BLOCKS})",
     )
 
     return parser
 
 
 def setup_logging(verbose=False):
-    """Configure logging for the application."""
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
+    """Configure logging for the application.
+
+    A timestamped log file is ALWAYS created in outputs/logs/ with full
+    verbose/debug logging, regardless of the --verbose flag.  This allows
+    post-run diagnosis by reading the log file.
+
+    When verbose=False (default), console output is suppressed so the CLI
+    shows only the title and progress bars.  When verbose=True, debug
+    output also appears on the console.
+
+    Returns:
+        str: Absolute path to the log file for this run.
+    """
+    import time as _time
+
+    # Ensure logs directory exists (early, before config.ensure_directories)
+    os.makedirs(config.LOGS_DIR, exist_ok=True)
+
+    timestamp = _time.strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(config.LOGS_DIR, f"run_{timestamp}.log")
+
+    # --- File handler: always verbose ---
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
+        )
     )
-    # Suppress noisy third-party loggers
-    for name in ("urllib3", "filelock", "huggingface_hub"):
+
+    root = logging.getLogger()
+    # Clear any existing handlers (e.g. from basicConfig)
+    root.handlers.clear()
+    root.addHandler(file_handler)
+
+    # Our project loggers always get DEBUG (written to file).
+    for name in (
+        "pipeline",
+        "video_engine",
+        "tts_engine",
+        "model_manager",
+        "config",
+        "utils",
+        "__main__",
+    ):
+        logging.getLogger(name).setLevel(logging.DEBUG)
+
+    # Suppress noisy third-party loggers that flood the log file.
+    for name in ("numba", "PIL", "torio"):
         logging.getLogger(name).setLevel(logging.WARNING)
+
+    if verbose:
+        # Also add a console handler so debug output appears on screen.
+        console_handler = logging.StreamHandler(sys.stderr)
+        console_handler.setLevel(logging.DEBUG)
+        console_handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                datefmt="%H:%M:%S",
+            )
+        )
+        root.addHandler(console_handler)
+        # Root at INFO so vendor [diag] messages are visible on console + file.
+        root.setLevel(logging.INFO)
+    else:
+        # Root at DEBUG so everything goes to the file, but nothing to console.
+        root.setLevel(logging.DEBUG)
+
+        # Redirect vendor print() / tqdm to devnull
+        import tqdm as _tqdm_mod
+
+        _devnull = open(os.devnull, "w")
+        _tqdm_mod.tqdm.__init_original__ = _tqdm_mod.tqdm.__init__
+
+        _orig_init = _tqdm_mod.tqdm.__init__
+
+        def _silent_tqdm_init(self, *a, **kw):
+            kw["disable"] = True
+            _orig_init(self, *a, **kw)
+
+        _tqdm_mod.tqdm.__init__ = _silent_tqdm_init
+
+        # Suppress Python warnings (FutureWarning, DeprecationWarning, etc.)
+        import warnings
+
+        warnings.filterwarnings("ignore")
+
+        # Capture stray print()/stderr from vendor code (e.g. xformers triton warning).
+        # Store real stderr FIRST so rich Console progress bars still work.
+        config._REAL_STDERR = sys.stderr
+        sys.stdout = _devnull
+        sys.stderr = _devnull
+
+    return log_file
 
 
 def _check_gpu():
@@ -112,22 +212,45 @@ def _check_gpu():
         return False, "PyTorch not installed. Run install.bat first."
 
 
+def _resolve_animation(animation_arg):
+    """Resolve animation description from CLI arg or default file.
+
+    Args:
+        animation_arg: None (use default file), a path to a .txt file, or inline text.
+
+    Returns:
+        str: The animation description text.
+    """
+    if animation_arg is None:
+        # Fall back to default file
+        path = config.DEFAULT_ANIMATION_FILE
+        if os.path.isfile(path):
+            return open(path, "r", encoding="utf-8").read().strip()
+        # Hardcoded fallback if file is missing
+        return "A person is talking naturally with expressive facial movements and gestures."
+
+    # If it looks like a file path and exists, read it
+    if os.path.isfile(animation_arg):
+        return open(animation_arg, "r", encoding="utf-8").read().strip()
+
+    # Otherwise treat as inline text
+    return animation_arg.strip()
+
+
 def main():
     parser = build_parser()
     args = parser.parse_args()
 
-    setup_logging(verbose=args.verbose)
-
-    # Apply CLI overrides to config before any engine loads
-    if args.blocks_to_swap is not None:
-        config.VIDEO_BLOCKS_TO_SWAP = args.blocks_to_swap
-    if args.prefetch_blocks is not None:
-        config.VIDEO_PREFETCH_BLOCKS = args.prefetch_blocks
+    config._VERBOSE = args.verbose
+    log_file = setup_logging(verbose=args.verbose)
 
     from rich.console import Console
     from pipeline import Pipeline
 
-    console = Console()
+    # Always write user-facing output to stderr (stdout may be silenced)
+    _stderr = getattr(config, "_REAL_STDERR", sys.stderr)
+    console = Console(file=_stderr)
+    console.print(f"[dim]Log file: {log_file}[/dim]")
 
     # Check GPU availability
     gpu_ok, gpu_msg = _check_gpu()
@@ -135,9 +258,20 @@ def main():
         console.print(f"[red]ERROR: {gpu_msg}[/red]")
         return 1
 
+    # Resolve animation prompt
+    animation_prompt = _resolve_animation(args.animation)
+
+    # Apply --audio-cfg override if specified
+    if args.audio_cfg is not None:
+        config.VIDEO_AUDIO_GUIDE_SCALE = args.audio_cfg
+        config.VIDEO_LORA_AUDIO_GUIDE_SCALE = args.audio_cfg
+
     # --video-only: skip TTS, go straight to video
     if args.video_only:
         import utils
+        import time as _time
+        from pipeline import _make_progress, _fmt, _estimate_video_eta
+        from video_engine import VideoEngine
 
         audio_path = args.video_only
         utils.validate_audio_file(audio_path)
@@ -150,26 +284,53 @@ def main():
             return 1
         utils.validate_image_file(image)
 
-        console.print(f"[bold]Video-only mode[/bold]: {audio_path}")
-        from video_engine import VideoEngine
-        import time as _time
+        console.print()
+        console.print("[bold]Video-only mode[/bold]")
+        console.print()
 
         engine = VideoEngine()
         try:
             _vo_start = _time.time()
-            engine.load_model()
 
-            video_path = engine.generate(
-                image_path=image,
-                audio_path=audio_path,
-            )
+            if args.verbose:
+                engine.load_model()
+                audio_duration = engine.get_audio_duration(audio_path)
+                total_steps = engine.estimate_total_steps(audio_duration)
+                video_path = engine.generate(
+                    image_path=image,
+                    audio_path=audio_path,
+                    animation_prompt=animation_prompt,
+                )
+            else:
+                with _make_progress(console) as progress:
+                    load_task = progress.add_task("Loading video model", total=None)
+                    engine.load_model()
+                    progress.update(load_task, total=1, completed=1)
+
+                    audio_duration = engine.get_audio_duration(audio_path)
+                    total_steps = engine.estimate_total_steps(audio_duration)
+
+                    eta_secs = _estimate_video_eta(audio_duration)
+                    console.print(
+                        f"[dim]Video ETA: ~{_fmt(eta_secs)} "
+                        f"({total_steps} steps \u00d7 ~{config.VIDEO_SECS_PER_STEP}s/step)[/dim]"
+                    )
+
+                    gen_task = progress.add_task("Generating video", total=total_steps)
+
+                    video_path = engine.generate(
+                        image_path=image,
+                        audio_path=audio_path,
+                        animation_prompt=animation_prompt,
+                        step_callback=lambda: progress.advance(gen_task),
+                    )
+                    progress.update(gen_task, completed=total_steps)
+
             _vo_elapsed = _time.time() - _vo_start
-            _vo_secs = int(_vo_elapsed)
-            _h, _rem = divmod(_vo_secs, 3600)
-            _m, _s = divmod(_rem, 60)
-            _hms = f"{_h}h {_m}m {_s}s" if _h else (f"{_m}m {_s}s" if _m else f"{_s}s")
-            console.print(f"\n[bold green]Video saved:[/bold green] {video_path}")
-            console.print(f"  Total time: {_hms} ({_vo_elapsed:.1f}s)")
+            console.print()
+            console.print(f"[bold green]Done![/bold green]  {_fmt(_vo_elapsed)}")
+            console.print(f"  Video: {video_path}")
+            console.print()
             return 0
         except Exception as e:
             logging.getLogger(__name__).exception("Video generation failed")
@@ -181,26 +342,54 @@ def main():
     # --audio-only: generate audio only
     if args.audio_only:
         import utils
+        import time as _time
+        from pipeline import _make_progress, _fmt
+        from tts_engine import TTSEngine, chunk_text
 
         script_text = utils.validate_script()
-
         voice_ref = config.DEFAULT_VOICE_REF
+        chunks = chunk_text(script_text)
+        est_secs = 30 + len(chunks) * 8
 
-        console.print(f"[bold]Audio-only mode[/bold]: {len(script_text)} chars")
-        from tts_engine import TTSEngine
+        console.print()
+        console.print("[bold]Audio-only mode[/bold]")
+        console.print(
+            f"[dim]Estimated time: ~{_fmt(est_secs)} ({len(chunks)} chunk{'s' if len(chunks) != 1 else ''})[/dim]"
+        )
+        console.print()
 
         engine = TTSEngine()
         try:
-            engine.load_model()
-            audio_path = engine.generate(
-                text=script_text,
-                voice_ref_path=voice_ref,
-            )
+            _ao_start = _time.time()
 
-            console.print(f"\n[bold green]Audio saved:[/bold green] {audio_path}")
+            if args.verbose:
+                engine.load_model()
+                audio_path = engine.generate(
+                    text=script_text,
+                    voice_ref_path=voice_ref,
+                )
+            else:
+                with _make_progress(console) as progress:
+                    load_task = progress.add_task("Loading TTS model", total=None)
+                    engine.load_model()
+                    progress.update(load_task, total=1, completed=1)
+
+                    gen_task = progress.add_task("Generating audio", total=len(chunks))
+
+                    audio_path = engine.generate(
+                        text=script_text,
+                        voice_ref_path=voice_ref,
+                        progress_callback=lambda: progress.advance(gen_task),
+                    )
+
+            _ao_elapsed = _time.time() - _ao_start
+            console.print()
+            console.print(f"[bold green]Done![/bold green]  {_fmt(_ao_elapsed)}")
+            console.print(f"  Audio: {audio_path}")
+            console.print()
             return 0
         except Exception as e:
-            logging.getLogger(__name__).exception("TTS generation failed")
+            traceback.print_exc()
             console.print(f"\n[red]ERROR: {e}[/red]")
             return 1
         finally:
@@ -210,24 +399,15 @@ def main():
     pipeline = Pipeline()
 
     try:
-        result = pipeline.run()
+        result = pipeline.run(animation_prompt=animation_prompt, verbose=args.verbose)
         return 0
 
-    except FileNotFoundError as e:
-        console.print(f"\n[red]ERROR: {e}[/red]")
-        return 1
-    except ValueError as e:
-        console.print(f"\n[red]ERROR: {e}[/red]")
-        return 1
-    except RuntimeError as e:
-        console.print(f"\n[red]ERROR: {e}[/red]")
-        return 1
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted by user.[/yellow]")
         pipeline._cleanup()
         return 130
     except Exception as e:
-        logging.getLogger(__name__).exception("Pipeline failed")
+        traceback.print_exc()
         console.print(f"\n[red]FATAL: {e}[/red]")
         return 1
 

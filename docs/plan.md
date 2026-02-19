@@ -48,10 +48,11 @@ All models, checkpoints, text encoders, and enhancement weights are **automatica
 
 | Asset                    | Source                                                | Size (approx) | Auto-Download Method                  |
 | ------------------------ | ----------------------------------------------------- | ------------- | ------------------------------------- |
-| Chatterbox Turbo weights | HuggingFace (via `from_pretrained`)                   | ~700MB        | Built-in to Chatterbox library        |
-| Wan2.1-I2V-14B-480P      | HuggingFace (`Wan-AI/Wan2.1-I2V-14B-480P`)            | ~28GB         | `huggingface_hub.snapshot_download()` |
-| chinese-wav2vec2-base    | HuggingFace (`TencentGameMate/chinese-wav2vec2-base`) | ~360MB        | `huggingface_hub.snapshot_download()` |
-| InfiniteTalk checkpoints | HuggingFace (`MeiGen-AI/InfiniteTalk`)                | ~1.5GB        | `huggingface_hub.snapshot_download()` |
+| Chatterbox Turbo weights | HuggingFace (via `from_pretrained`)                   | ~700 MB       | Built-in to Chatterbox library        |
+| Wan2.1-I2V-14B-480P      | HuggingFace (`Wan-AI/Wan2.1-I2V-14B-480P`)            | ~5.3 GB       | `huggingface_hub.snapshot_download()` |
+| chinese-wav2vec2-base    | HuggingFace (`TencentGameMate/chinese-wav2vec2-base`) | ~360 MB       | `huggingface_hub.snapshot_download()` |
+| InfiniteTalk FP8 ckpt    | HuggingFace (`MeiGen-AI/InfiniteTalk`)                | ~26 GB        | `huggingface_hub.snapshot_download()` |
+| LightX2V LoRA            | HuggingFace (`Kijai/WanVideo_comfy`)                  | ~317 MB       | `huggingface_hub.hf_hub_download()`   |
 
 **Behavior:**
 
@@ -59,7 +60,7 @@ All models, checkpoints, text encoders, and enhancement weights are **automatica
 - Missing weights are downloaded with a progress bar (`tqdm`)
 - Downloads are atomic (temp file → rename) to avoid corrupt partial downloads
 - Subsequent runs skip download and load directly from `models/`
-- A `--download-only` CLI flag allows pre-fetching all models without running generation
+- Models are downloaded automatically on first run with rich progress bars
 
 ---
 
@@ -78,6 +79,7 @@ zimbra/
 ├── pipeline.py                # Orchestrates TTS → video → post-process
 ├── model_manager.py           # Auto-download logic for all model weights
 ├── utils.py                   # File validation, ffmpeg helpers
+├── fp8_optimization.py        # Native FP8 matmul via torch._scaled_mm
 ├── inputs/                    # Default input assets (CLI falls back here)
 │   ├── voice_ref/
 │   │   └── default.wav        # Default voice clone reference (.wav or .mp3)
@@ -100,7 +102,10 @@ zimbra/
     ├── phase-2-tts/
     ├── phase-3-video/
     ├── phase-4-pipeline/
-    └── phase-5-polish/
+    ├── phase-5-polish/
+    ├── phase-6-performance/
+    ├── phase-7-block-swap/
+    └── phase-8-optimization/
 ```
 
 ---
@@ -135,6 +140,22 @@ zimbra/
 
 **Goal:** Replace the vendor's per-layer VRAM management with block-level swapping + async CUDA stream prefetch (Kijai's ComfyUI approach). Swap entire DiT blocks instead of individual layers, prefetch next block while current one computes. Target: ≤2 min per second of video.
 
+### Phase 8 — Performance Optimization & FP8 Device Mismatch Fix
+
+**Goal:** Reduce per-chunk overhead (chunk caching, pinned memory, inference_mode) and fix `_scaled_mm` device mismatch crash. Root cause: `scale_weight` stored as plain tensor attribute (invisible to `nn.Module.to()`), combined with `non_blocking` transfers and LoRA replacing pinned data. Fixed by registering `scale_weight` as a buffer, synchronous current-block transfer, and device guards.
+
+### Phase 9 — Block Swap VRAM Spill Fix
+
+**Goal:** Fix 20-26x slowdown in swapped blocks caused by Windows WDDM shared memory spill.
+
+**Root cause:** With 25 persistent blocks (11.75GB) + 1 swap buffer (0.47GB) + non-block params (0.5GB) = 12.72GB on GPU during swap block compute, plus ~3.5GB intermediates = ~16.2GB peak, exceeding 16GB physical VRAM. Windows WDDM transparently spills to system RAM via PCIe, causing progressive per-block slowdown (self_attn 2.5x → ffn 55x).
+
+**Diagnostics added:** Per-sub-operation timing in `WanAttentionBlock.forward()`, FP8 path counters, weight dtype/device/contiguity inspection, VRAM allocated/reserved snapshots. Confirmed FP8 fast path works correctly (fast=15, fallback=0) and the issue is purely memory pressure.
+
+**Fix:** Increased `activation_reserve` from 4.0 to 5.0 GiB in `auto_tune_blocks_to_swap()`. Result: 23 persistent / 17 swapped (was 25/15). Swap blocks now have 4.22 GiB headroom (was 3.28 GiB), safely above the 3.75 GiB threshold proven by persistent blocks.
+
+**Result:** Swap blocks: 5.5s/blk → 0.27s/blk. Per-pass: ~90s → ~12s. Per-chunk denoising: ~720s → ~117s. Overall: ~1.15 min per second of video (4 LoRA steps).
+
 ---
 
 ## Key Design Decisions
@@ -151,6 +172,8 @@ zimbra/
 
 ## Expected Performance
 
-- **TTS** (~30s script): ~5-10 seconds on RTX 4090
-- **Video**: ~1-1.5 min per second of audio on RTX 4090 Laptop (16 GB VRAM) with FP8 + full DiT on GPU
-- **Total**: ~8-15 minutes for a 10-second clip (4 steps with LoRA)
+- **TTS** (~30s script): ~5-18 seconds on RTX 4090 Laptop
+- **Video**: ~1.2 min per second of audio on RTX 4090 Laptop (16 GB VRAM) with FP8 + block swap
+- **Total**: ~14 minutes for a 10-second clip (4 LoRA steps, 23/40 blocks persistent)
+- **Per-step**: ~35s (including VAE decode and chunk overhead)
+- **Block speed**: persistent 0.25s/blk, swap 0.27s/blk (VRAM: 12.8G/15.0G peak during swap)

@@ -39,9 +39,10 @@ install.bat
 huggingface-cli login
 
 # 4. Place your inputs
-#    - Portrait image  → inputs/images/default.png
-#    - Voice reference → inputs/voice_ref/default.mp3  (>5 seconds)
-#    - Script text     → inputs/scripts/default.txt
+#    - Portrait image       → inputs/images/default.png
+#    - Voice reference      → inputs/voice_ref/default.mp3  (>5 seconds)
+#    - Script text          → inputs/scripts/default.txt
+#    - Animation description → inputs/animation/default.txt  (optional)
 
 # 5. Generate! (models download automatically on first run)
 python generate.py
@@ -62,13 +63,14 @@ python generate.py --video-only outputs/audio/tts_20250216.wav
 
 ### Options
 
-| Flag                  | Description                                     |
-| --------------------- | ----------------------------------------------- |
-| `--audio-only`        | Generate audio only (skip video)                |
-| `--video-only AUDIO`  | Generate video from existing audio file         |
-| `--verbose`           | Debug logging                                   |
-| `--blocks-to-swap N`  | DiT blocks to swap CPU↔GPU (default: auto-tune) |
-| `--prefetch-blocks N` | Async prefetch N blocks ahead (default: 1)      |
+| Flag                  | Description                                       |
+| --------------------- | ------------------------------------------------- |
+| `--audio-only`        | Generate audio only (skip video)                  |
+| `--video-only AUDIO`  | Generate video from existing audio file           |
+| `--animation TEXT`    | Animation description (text or path to .txt file) |
+| `--verbose`           | Debug logging                                     |
+| `--blocks-to-swap N`  | DiT blocks to swap CPU↔GPU (default: auto-tune)   |
+| `--prefetch-blocks N` | Async prefetch N blocks ahead (default: 1)        |
 
 Run `python generate.py --help` for full details.
 
@@ -88,9 +90,10 @@ zimbra/
 ├── model_manager.py          # Auto-download logic
 ├── utils.py                  # File validation, FFmpeg helpers
 ├── inputs/
-│   ├── images/default.png    # Default portrait image
-│   ├── voice_ref/default.mp3 # Default voice reference
-│   └── scripts/default.txt   # Default script text
+│   ├── images/default.png       # Default portrait image
+│   ├── voice_ref/default.mp3    # Default voice reference
+│   ├── scripts/default.txt      # Default script text
+│   └── animation/default.txt    # Default animation description
 ├── outputs/                  # Generated files (gitignored)
 │   ├── audio/                # TTS audio
 │   └── video/                # Final videos
@@ -114,17 +117,18 @@ zimbra/
 
 1. **TTS** — Chatterbox Turbo loads (~4 GB VRAM), generates voice-cloned audio from script text. Long text is chunked at sentence boundaries and crossfade-stitched.
 2. **Unload** — TTS model fully unloaded, GPU memory freed to ~0 GB.
-3. **Video** — InfiniteTalk loads with FP8 quantization (~18.9B params, 40 DiT blocks). VAE/CLIP/T5 offloaded to CPU. Block-level swapping keeps ~32 blocks on GPU and swaps ~8 blocks with async CUDA stream prefetch. Generates talking-head video driven by wav2vec2 audio embeddings.
+3. **Video** — InfiniteTalk loads with FP8 quantization (~18.9B params, 40 DiT blocks). VAE/CLIP/T5 offloaded to CPU. Block-level swapping keeps 23 blocks on GPU and swaps 17 blocks with async CUDA stream prefetch. Generates talking-head video driven by wav2vec2 audio embeddings.
 4. **Mux** — FFmpeg combines video with audio into final MP4.
 
 ## Performance
 
 On RTX 4090 Laptop (16 GB VRAM):
 
-| Stage | Time       | Notes                                       |
-| ----- | ---------- | ------------------------------------------- |
-| TTS   | ~5-18s     | Chatterbox Turbo, depends on script length  |
-| Video | ~1-2 min/s | 4 steps (LoRA), block swap + async prefetch |
+| Stage | Time          | Notes                                             |
+| ----- | ------------- | ------------------------------------------------- |
+| TTS   | ~5-18s        | Chatterbox Turbo, depends on script length        |
+| Video | ~1.2 min/s    | 4 steps (LoRA), block swap + async prefetch       |
+| Total | ~14 min / 10s | Including CLIP/VAE encode, decode, chunk overhead |
 
 Video length always matches audio length. Video resolution matches input image aspect ratio.
 
@@ -133,7 +137,8 @@ Video length always matches audio length. Video resolution matches input image a
 1. **Block-level swapping with async prefetch** — Instead of per-layer CPU↔GPU transfers,
    entire DiT blocks are swapped. While block N computes on GPU, block N+1 prefetches from
    CPU via a dedicated CUDA stream. Transfer latency is hidden behind compute time.
-   Auto-tuned: ~32/40 blocks on GPU, ~8 blocks swap (16 GB VRAM).
+   Auto-tuned: 23/40 blocks on GPU, 17 blocks swap (16 GB VRAM). VRAM headroom is carefully
+   tuned to prevent Windows WDDM shared memory spill (~0.27s/block swap vs 0.25s/block persistent).
 
 2. **FP8 quantization** — The DiT uses FP8 weights (~1 byte/param), reducing the 18.9B
    model from ~38 GB (fp16) to ~18.9 GB. Combined with CPU offloading, fits on 16 GB.
@@ -161,7 +166,7 @@ All models auto-download on first run:
 ## Troubleshooting
 
 - **"No CUDA GPU detected"** — Ensure NVIDIA drivers are installed and `nvidia-smi` works.
-- **"GPU out of memory"** — Close other GPU applications. Use `--video-size infinitetalk-480`. The 18.9B FP8 DiT needs ~15 GB VRAM (14.5B persistent + activation headroom).
+- **"GPU out of memory"** — Close other GPU applications. Use `--video-size infinitetalk-480`. The 18.9B FP8 DiT needs ~15 GB VRAM (23 persistent blocks + swap buffer + activation headroom).
 - **HuggingFace auth errors** — Run `huggingface-cli login` and accept the Chatterbox model license.
 - **FFmpeg not found** — Install FFmpeg and add to PATH, or `pip install imageio-ffmpeg`.
 - **Triton warning on Windows** — Expected and harmless (no Windows wheels available).

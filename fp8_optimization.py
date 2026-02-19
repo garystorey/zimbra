@@ -68,13 +68,11 @@ def fp8_linear_forward(cls, base_dtype, input):
         # Skip clamp — values outside FP8 range saturate naturally on cast.
         inn = input.reshape(-1, in_features).to(torch.float8_e4m3fn)
 
-        bias = cls.bias.to(base_dtype) if cls.bias is not None else None
-
         result = torch._scaled_mm(
             inn,
             cls.weight.t(),
             out_dtype=base_dtype,
-            bias=bias,
+            bias=cls.bias,
             scale_a=scale_input,
             scale_b=scale_weight,
         )
@@ -247,12 +245,18 @@ def load_fp8_weights_native(model, safetensors_path, base_dtype=torch.float16):
                     new_param = nn.Parameter(tensor, requires_grad=False)
                     setattr(parent, attr_name, new_param)
 
-                    # Load scale_weight if this is an FP8 weight
+                    # Load scale_weight if this is an FP8 weight.
+                    # Register as a buffer (not plain attr) so nn.Module.to()
+                    # moves it during block swap / offload / restore.
                     if tensor.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
                         module_path = ".".join(parts[:-1])
                         scale_key = module_path + ".scale_weight"
                         if scale_key in all_keys:
-                            parent.scale_weight = f.get_tensor(scale_key)
+                            parent.register_buffer(
+                                "scale_weight",
+                                f.get_tensor(scale_key),
+                                persistent=False,
+                            )
                 elif isinstance(existing, torch.Tensor):
                     setattr(parent, attr_name, tensor)
                 else:

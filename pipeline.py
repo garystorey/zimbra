@@ -6,21 +6,90 @@ Models run sequentially — TTS is fully unloaded before the video model loads
 to stay within 16GB VRAM.
 """
 
+import math
 import os
+import sys
 import time
 import logging
 
 import torch
 from rich.console import Console
-from rich.panel import Panel
+from rich.progress import (
+    Progress,
+    SpinnerColumn,
+    BarColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    MofNCompleteColumn,
+    TaskProgressColumn,
+)
 
 import config
 import utils
-from tts_engine import TTSEngine
+from tts_engine import TTSEngine, chunk_text
 from video_engine import VideoEngine
 
 logger = logging.getLogger(__name__)
-console = Console()
+
+
+def _get_console():
+    """Get a Console that writes to the real stderr (survives stdout redirect)."""
+    _stderr = getattr(config, "_REAL_STDERR", sys.stderr)
+    return Console(file=_stderr)
+
+
+def _fmt(secs):
+    s = int(secs)
+    h, rem = divmod(s, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}h {m}m {s}s" if h else (f"{m}m {s}s" if m else f"{s}s")
+
+
+def _make_progress(console):
+    """Create a rich Progress bar with a consistent style."""
+    return Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(bar_width=40),
+        TaskProgressColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+        transient=False,
+    )
+
+
+def _estimate_video_eta(audio_duration):
+    """Estimate video generation time in seconds from audio duration."""
+    frame_num = config.VIDEO_FRAME_NUM
+    motion_frame = config.VIDEO_MOTION_FRAME
+    if config.VIDEO_USE_LORA:
+        sample_steps = config.VIDEO_LORA_SAMPLE_STEPS
+        text_cfg = config.VIDEO_LORA_TEXT_GUIDE_SCALE
+        audio_cfg = config.VIDEO_LORA_AUDIO_GUIDE_SCALE
+    else:
+        sample_steps = config.VIDEO_SAMPLE_STEPS
+        text_cfg = config.VIDEO_TEXT_GUIDE_SCALE
+        audio_cfg = config.VIDEO_AUDIO_GUIDE_SCALE
+    audio_frames = int(audio_duration * config.VIDEO_FPS) + 1
+    effective_max = max(audio_frames, frame_num)
+    if config.VIDEO_MODE == "streaming" and effective_max > frame_num:
+        num_chunks = 1 + math.ceil(
+            (effective_max - frame_num) / (frame_num - motion_frame)
+        )
+    else:
+        num_chunks = 1
+    total_steps = num_chunks * sample_steps
+    # VIDEO_SECS_PER_STEP is calibrated for 1 pass/step; scale by passes
+    skip_cfg = math.isclose(text_cfg, 1.0) and math.isclose(audio_cfg, 1.0)
+    passes = 1 if skip_cfg else (2 if math.isclose(text_cfg, 1.0) else 3)
+    return total_steps * config.VIDEO_SECS_PER_STEP * passes
+
+
+def _estimate_audio_duration_from_script(script_text):
+    """Rough estimate: ~2.5 words/sec typical speech rate."""
+    words = len(script_text.split())
+    return max(words / 2.5, 1.0)
 
 
 class Pipeline:
@@ -64,7 +133,7 @@ class Pipeline:
                 pass
             self.video_engine = None
 
-    def run(self):
+    def run(self, animation_prompt=None, verbose=False):
         """
         Run the full pipeline: TTS → Video.
 
@@ -73,64 +142,91 @@ class Pipeline:
             inputs/images/default.png     Portrait image
             inputs/voice_ref/default.mp3  Voice reference audio
 
+        Args:
+            animation_prompt: Text describing the animation style. If None,
+                the video engine uses its default prompt.
+
         Returns:
             Dict with keys: script_text, audio_path, video_path, timings
         """
+        console = _get_console()
         pipeline_start = time.time()
         timings = {}
 
         config.ensure_directories()
 
         # -----------------------------------------------------------------
-        # Step 1: Validate inputs
+        # Title
         # -----------------------------------------------------------------
-        console.print(Panel("[bold]Step 1/4: Validating inputs[/bold]"))
+        console.print()
+        console.print("[bold]Talking Head Video Generator[/bold]")
+        console.print()
 
-        # Script
+        # -----------------------------------------------------------------
+        # Validate inputs
+        # -----------------------------------------------------------------
         script_text = utils.validate_script()
-        console.print(
-            f"  Script: {len(script_text)} chars, " f"{len(script_text.split())} words"
-        )
 
-        # Voice reference
+        # -----------------------------------------------------------------
+        # ETA estimate (before any model loading)
+        # -----------------------------------------------------------------
+        est_audio_dur = _estimate_audio_duration_from_script(script_text)
+        est_video_secs = _estimate_video_eta(est_audio_dur)
+        est_tts_secs = 30 + len(chunk_text(script_text)) * 8  # ~30s load + ~8s/chunk
+        est_total = est_tts_secs + 60 + est_video_secs  # +60s for model load
+        console.print(
+            f"[dim]Estimated total time: ~{_fmt(est_total)} "
+            f"(TTS ~{_fmt(est_tts_secs)}, "
+            f"video load ~1m, "
+            f"video gen ~{_fmt(est_video_secs)})[/dim]"
+        )
+        console.print()
+
         voice_ref = config.DEFAULT_VOICE_REF
         if voice_ref is not None:
             utils.validate_audio_file(voice_ref)
-            console.print(f"  Voice ref: {voice_ref}")
-        else:
-            console.print("  Voice ref: [dim]built-in default[/dim]")
 
-        # Portrait image
         image = config.DEFAULT_IMAGE
         if image is None:
             raise FileNotFoundError(
                 "No default image found. " f"Place a default.png in {config.IMAGES_DIR}"
             )
         utils.validate_image_file(image)
-        console.print(f"  Image: {image}")
 
         # -----------------------------------------------------------------
-        # Step 2: TTS — Generate audio
+        # TTS — Generate audio
         # -----------------------------------------------------------------
-        console.print(
-            Panel("[bold]Step 2/4: Generating audio (Chatterbox Turbo)[/bold]")
-        )
-
         tts_start = time.time()
-
-        # Build audio output path
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         audio_output = os.path.join(config.AUDIO_OUTPUT_DIR, f"tts_{timestamp}.wav")
 
         try:
             self.tts_engine = TTSEngine()
-            self.tts_engine.load_model()
+            chunks = chunk_text(script_text)
+            num_chunks = len(chunks)
 
-            audio_path = self.tts_engine.generate(
-                text=script_text,
-                voice_ref_path=voice_ref,
-                output_path=audio_output,
-            )
+            if verbose:
+                self.tts_engine.load_model()
+                audio_path = self.tts_engine.generate(
+                    text=script_text,
+                    voice_ref_path=voice_ref,
+                    output_path=audio_output,
+                )
+            else:
+                with _make_progress(console) as progress:
+                    load_task = progress.add_task("Loading TTS model", total=None)
+                    self.tts_engine.load_model()
+                    progress.update(load_task, total=1, completed=1)
+
+                    gen_task = progress.add_task("Generating audio", total=num_chunks)
+
+                    audio_path = self.tts_engine.generate(
+                        text=script_text,
+                        voice_ref_path=voice_ref,
+                        output_path=audio_output,
+                        progress_callback=lambda: progress.advance(gen_task),
+                    )
+
         except torch.cuda.OutOfMemoryError:
             self._cleanup()
             raise RuntimeError(
@@ -142,32 +238,56 @@ class Pipeline:
             raise
 
         timings["tts"] = time.time() - tts_start
-        console.print(f"  [green]Audio generated in {timings['tts']:.1f}s[/green]")
 
-        # -----------------------------------------------------------------
-        # Step 3: Unload TTS, free GPU
-        # -----------------------------------------------------------------
-        console.print(Panel("[bold]Step 3/4: Freeing GPU memory[/bold]"))
-
+        # Unload TTS
         self.tts_engine.unload_model()
         self.tts_engine = None
-        console.print("  [green]TTS model unloaded[/green]")
 
         # -----------------------------------------------------------------
-        # Step 4: Video — Generate talking-head video
+        # Video — Generate talking-head video
         # -----------------------------------------------------------------
-        console.print(Panel("[bold]Step 4/4: Generating video (InfiniteTalk)[/bold]"))
-
         video_start = time.time()
 
         try:
             self.video_engine = VideoEngine()
-            self.video_engine.load_model()
 
-            video_path = self.video_engine.generate(
-                image_path=image,
-                audio_path=audio_path,
-            )
+            if verbose:
+                self.video_engine.load_model()
+                audio_duration = self.video_engine.get_audio_duration(audio_path)
+                total_steps = self.video_engine.estimate_total_steps(audio_duration)
+                video_path = self.video_engine.generate(
+                    image_path=image,
+                    audio_path=audio_path,
+                    animation_prompt=animation_prompt,
+                )
+            else:
+                with _make_progress(console) as progress:
+                    load_task = progress.add_task("Loading video model", total=None)
+                    self.video_engine.load_model()
+                    progress.update(load_task, total=1, completed=1)
+
+                    audio_duration = self.video_engine.get_audio_duration(audio_path)
+                    total_steps = self.video_engine.estimate_total_steps(audio_duration)
+
+                    # Refined ETA now that we know actual audio duration
+                    refined_video_eta = _estimate_video_eta(audio_duration)
+                    console.print(
+                        f"[dim]Video ETA (refined): ~{_fmt(refined_video_eta)} "
+                        f"({total_steps} steps × ~{int(refined_video_eta / max(total_steps, 1))}s/step)[/dim]"
+                    )
+
+                    gen_task = progress.add_task("Generating video", total=total_steps)
+
+                    video_path = self.video_engine.generate(
+                        image_path=image,
+                        audio_path=audio_path,
+                        animation_prompt=animation_prompt,
+                        step_callback=lambda: progress.advance(gen_task),
+                    )
+
+                    # Ensure bar completes even if estimate was slightly off
+                    progress.update(gen_task, completed=total_steps)
+
         except torch.cuda.OutOfMemoryError:
             self._cleanup()
             raise RuntimeError(
@@ -179,7 +299,6 @@ class Pipeline:
             raise
 
         timings["video"] = time.time() - video_start
-        console.print(f"  [green]Video generated in {timings['video']:.1f}s[/green]")
 
         # Unload video model
         self.video_engine.unload_model()
@@ -190,24 +309,11 @@ class Pipeline:
         # -----------------------------------------------------------------
         timings["total"] = time.time() - pipeline_start
 
-        def _fmt(secs):
-            s = int(secs)
-            h, rem = divmod(s, 3600)
-            m, s = divmod(rem, 60)
-            return f"{h}h {m}m {s}s" if h else (f"{m}m {s}s" if m else f"{s}s")
-
         console.print()
-        console.print(
-            Panel(
-                f"[bold green]Pipeline complete![/bold green]\n\n"
-                f"  Audio: {audio_path}\n"
-                f"  Video: {video_path}\n\n"
-                f"  TTS time:   {_fmt(timings['tts'])}\n"
-                f"  Video time: {_fmt(timings['video'])}\n"
-                f"  Total time: {_fmt(timings['total'])}",
-                title="Results",
-            )
-        )
+        console.print(f"[bold green]Done![/bold green]  {_fmt(timings['total'])}")
+        console.print(f"  Audio: {audio_path}")
+        console.print(f"  Video: {video_path}")
+        console.print()
 
         return {
             "script_text": script_text,
