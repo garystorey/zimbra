@@ -6,7 +6,7 @@ videos from a portrait image and audio file.
 
 Handles model loading/unloading, audio embedding extraction via wav2vec2,
 video generation with streaming mode, and audio muxing.
-Supports CPU offloading + FP8 quantization for 16GB VRAM GPUs.
+Supports CPU offloading + GGUF quantization for 16GB VRAM GPUs.
 """
 
 import os
@@ -31,7 +31,6 @@ import soundfile as sf
 
 import config
 import model_manager
-import fp8_optimization
 import gguf_loader
 
 logger = logging.getLogger(__name__)
@@ -107,105 +106,6 @@ def _get_audio_embedding(
 
 
 # ---------------------------------------------------------------------------
-# LoRA helpers (FP8-aware weight merging)
-# ---------------------------------------------------------------------------
-
-
-def _apply_lora_to_model(model, lora_path, lora_scale=1.0):
-    """
-    Apply a LoRA to a model, handling native FP8 (float8_e4m3fn) weights.
-
-    For FP8 weights: dequantize using scale_weight, apply LoRA delta,
-    re-quantize back to FP8. This works with both native FP8 tensors
-    (from fp8_optimization.py) and regular float16/float32 weights.
-    """
-    from safetensors import safe_open
-    from tqdm import tqdm
-
-    # Load LoRA weights
-    with safe_open(lora_path, framework="pt") as f:
-        lora_weights = {key: f.get_tensor(key) for key in f.keys()}
-
-    # Parse LoRA pairs (same logic as WanLoraWrapper)
-    prefix = "diffusion_model."
-    lora_pairs = {}
-    for key in lora_weights:
-        if key.endswith("lora_down.weight") and key.startswith(prefix):
-            base_name = key[len(prefix) :].replace("lora_down.weight", "weight")
-            up_key = key.replace("lora_down.weight", "lora_up.weight")
-            if up_key in lora_weights:
-                lora_pairs[base_name] = (key, up_key)
-        elif key.endswith("diff_b") and key.startswith(prefix):
-            base_name = key[len(prefix) :].replace("diff_b", "bias")
-            lora_pairs[base_name] = (key,)
-        elif key.endswith("diff") and key.startswith(prefix):
-            base_name = key[len(prefix) :].replace("diff", "weight")
-            lora_pairs[base_name] = (key,)
-
-    def _apply_delta_to_param(parent, attr_name, delta):
-        """Apply a LoRA delta to a parameter, handling native FP8."""
-        param = getattr(parent, attr_name)
-        is_native_fp8 = param.dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
-
-        if is_native_fp8:
-            # Native FP8: dequantize via per-tensor scale, add delta, re-quantize
-            scale = getattr(parent, "scale_weight", None)
-            if scale is not None:
-                scale = scale.to(param.device)
-                fp_weight = param.data.float() * scale
-            else:
-                fp_weight = param.data.float()
-            delta = delta.to(fp_weight.device, fp_weight.dtype)
-            fp_weight.add_(delta)
-            # Re-quantize with new per-tensor scale (max may have changed)
-            amax = fp_weight.abs().max().clamp(min=1e-12)
-            new_scale = (amax / 448.0).float()
-            new_data = (fp_weight / new_scale).clamp(-448, 448).to(torch.float8_e4m3fn)
-            param.data = new_data
-            parent.register_buffer("scale_weight", new_scale, persistent=False)
-        else:
-            # Regular float weight
-            delta = delta.to(param.device, param.dtype)
-            param.data.add_(delta)
-
-    applied = 0
-    skipped = 0
-    for name in tqdm(lora_pairs, desc="Applying LoRA weights"):
-        # Navigate to the parameter: split into parent path + final attr (weight/bias)
-        parts = name.split(".")
-        parent = model
-        try:
-            for part in parts[:-1]:
-                parent = parent[int(part)] if part.isdigit() else getattr(parent, part)
-            param = getattr(parent, parts[-1])
-        except (AttributeError, IndexError, KeyError) as e:
-            logger.debug(f"  Skipping LoRA target {name}: {e}")
-            skipped += 1
-            continue
-
-        if isinstance(lora_pairs[name], tuple) and len(lora_pairs[name]) == 2:
-            # Standard LoRA: delta = matmul(up, down) * scale
-            down_key, up_key = lora_pairs[name]
-            lora_down = lora_weights[down_key].float()
-            lora_up = lora_weights[up_key].float()
-            delta = torch.matmul(lora_up, lora_down) * lora_scale
-            _apply_delta_to_param(parent, parts[-1], delta)
-        else:
-            # Direct diff weight
-            diff_key = lora_pairs[name][0]
-            delta = lora_weights[diff_key].float() * lora_scale
-            _apply_delta_to_param(parent, parts[-1], delta)
-        applied += 1
-
-    logger.info(f"Applied {applied} LoRA weight adjustments (native FP8)")
-    if skipped > 0:
-        logger.info(f"Skipped {skipped} LoRA targets (no matching model param)")
-    if applied == 0:
-        logger.warning("No LoRA weights were applied. Check LoRA file compatibility.")
-    return applied
-
-
-# ---------------------------------------------------------------------------
 # Video Engine class
 # ---------------------------------------------------------------------------
 
@@ -216,7 +116,7 @@ class VideoEngine:
 
     Supports cartoon/3D/photo input, arbitrary aspect ratios (follows input
     image dimensions), streaming mode for unlimited-length video, and
-    CPU offloading + FP8 quantization for 16GB VRAM GPUs.
+    CPU offloading + GGUF quantization for 16GB VRAM GPUs.
 
     Usage:
         engine = VideoEngine()
@@ -252,11 +152,9 @@ class VideoEngine:
     def _pre_encode_text(self, prompt=None):
         """Pre-encode the text prompt on GPU while VRAM is free.
 
-        FP8-quantized T5 on CPU is catastrophically slow (no FP8 hardware
-        support — every op dequantizes in software). By encoding on GPU
-        BEFORE block_swap fills VRAM, we get fast native FP8 inference.
-        The cached embeddings are stored on CPU and passed to
-        generate_infinitetalk() to skip T5 entirely during generation.
+        By encoding on GPU BEFORE block_swap fills VRAM, we avoid slow
+        CPU-based T5 inference. The cached embeddings are stored on CPU
+        and passed to generate_infinitetalk() to skip T5 during generation.
         """
         prompt = prompt or self._PROMPT
         n_prompt = self.pipe.sample_neg_prompt
@@ -331,24 +229,9 @@ class VideoEngine:
         task = "infinitetalk-14B"
         cfg = WAN_CONFIGS[task]
 
-        # Determine quantization mode for the pipeline constructor.
-        # Both GGUF and native FP8 create the model on meta device —
-        # weights are loaded externally after pipeline construction.
-        use_native_fp8 = config.VIDEO_QUANT == "fp8" and os.path.isfile(
-            config.INFINITETALK_FP8_CKPT
-        )
-        if use_gguf:
-            # GGUF: create model on meta device, load weights via gguf_loader
-            quant = "gguf"
-            quant_dir = None
-        elif use_native_fp8:
-            quant = "native_fp8"
-            quant_dir = config.INFINITETALK_FP8_CKPT
-        else:
-            quant = config.VIDEO_QUANT
-            quant_dir = (
-                config.INFINITETALK_FP8_CKPT if config.VIDEO_QUANT == "fp8" else None
-            )
+        # GGUF: create model on meta device, load weights via gguf_loader
+        quant = "gguf"
+        quant_dir = None
 
         self.pipe = wan.InfiniteTalkPipeline(
             config=cfg,
@@ -367,43 +250,20 @@ class VideoEngine:
             infinitetalk_dir=config.INFINITETALK_SINGLE_CKPT,
         )
 
-        # Load DiT weights based on quantization mode
+        # Load DiT weights as GGUF (on-demand dequantization)
         _progress(2, "Loading model weights")
-        if use_gguf:
-            logger.info("  Loading DiT weights as GGUF (on-demand dequantization)...")
-            gguf_loader.load_gguf_weights(
-                self.pipe.model,
-                config.GGUF_BASE_PATH,
-                config.GGUF_ADAPTER_PATH,
-                param_dtype=self.pipe.param_dtype,
-            )
-        elif use_native_fp8:
-            logger.info("  Loading DiT weights as native FP8 (torch._scaled_mm)...")
-            fp8_start = time.time()
-            fp8_optimization.load_fp8_weights_native(
-                self.pipe.model,
-                config.INFINITETALK_FP8_CKPT,
-                base_dtype=self.pipe.param_dtype,
-            )
-            self.pipe.model.eval().requires_grad_(False)
-            # Convert non-FP8 float32 params (biases, norms, Conv3d) to param_dtype.
-            # Must happen AFTER FP8 weight loading (model was on meta before).
-            # Skip scale_weight attributes — _scaled_mm requires float32 scales.
-            for module in self.pipe.model.modules():
-                for name, param in module.named_parameters(recurse=False):
-                    if param.dtype == torch.float32 and name != "scale_weight":
-                        param.data = param.data.to(self.pipe.param_dtype)
-                for name, buf in module.named_buffers(recurse=False):
-                    if buf.dtype == torch.float32 and name != "scale_weight":
-                        module._buffers[name] = buf.to(self.pipe.param_dtype)
-            fp8_elapsed = time.time() - fp8_start
-            logger.info(f"  Native FP8 weights loaded in {fp8_elapsed:.1f}s")
+        logger.info("  Loading DiT weights as GGUF (on-demand dequantization)...")
+        gguf_loader.load_gguf_weights(
+            self.pipe.model,
+            config.GGUF_BASE_PATH,
+            config.GGUF_ADAPTER_PATH,
+            param_dtype=self.pipe.param_dtype,
+        )
 
         # Pre-encode text prompt on GPU BEFORE block_swap fills VRAM.
-        # FP8-quantized T5 on CPU is catastrophically slow (no FP8 HW support).
         # At this point only T5+VAE+CLIP are loaded; plenty of GPU room for T5.
         _progress(3, "Pre-encoding text prompt")
-        logger.info("  Pre-encoding text prompt on GPU (avoids slow FP8 on CPU)...")
+        logger.info("  Pre-encoding text prompt on GPU...")
         self._pre_encode_text()
 
         # Block swap: offload VAE/CLIP/T5 to CPU first so auto-tune sees max free VRAM.
@@ -439,12 +299,11 @@ class VideoEngine:
             )
             # Tell vendor code we handle VRAM ourselves — skip its per-layer wrapping
             self.pipe.vram_management = False
-            # GGUF: skip offload_blocks/restore_blocks during generation.
+            # Skip offload_blocks/restore_blocks during CLIP/VAE encode.
             # GGUF model (~10GB) is small enough for CLIP/VAE to fit alongside
             # on 16GB without moving DiT blocks off GPU.  Eliminates ~20GB
             # round-trip PCIe transfer that caused hangs.
-            if use_gguf:
-                self.pipe._skip_block_offload = True
+            self.pipe._skip_block_offload = True
         else:
             # All blocks fit on GPU — move entire model there
             self.pipe.model.to(self.device)
@@ -469,16 +328,9 @@ class VideoEngine:
                     f"  Applying LightX2V LoRA (scale={config.VIDEO_LORA_SCALE})..."
                 )
                 lora_start = time.time()
-                if use_gguf:
-                    # GGUF: attach LoRA as patches (applied during dequant forward)
-                    count = gguf_loader.apply_lora_as_patches(
-                        self.pipe.model, lora_path, lora_scale=config.VIDEO_LORA_SCALE
-                    )
-                else:
-                    # FP8: merge LoRA directly into weights
-                    count = _apply_lora_to_model(
-                        self.pipe.model, lora_path, lora_scale=config.VIDEO_LORA_SCALE
-                    )
+                count = gguf_loader.apply_lora_as_patches(
+                    self.pipe.model, lora_path, lora_scale=config.VIDEO_LORA_SCALE
+                )
                 lora_elapsed = time.time() - lora_start
                 logger.info(f"  LoRA applied ({count} weights) in {lora_elapsed:.1f}s")
                 self._lora_applied = True
@@ -521,19 +373,10 @@ class VideoEngine:
         Returns the total number of step callbacks that will fire during
         generate(), accounting for streaming chunks.
         """
-        use_gguf = config.VIDEO_QUANT == "gguf"
-        if use_gguf:
-            frame_num = config.VIDEO_GGUF_FRAME_NUM
-            motion_frame = config.VIDEO_GGUF_MOTION_FRAME
-        else:
-            frame_num = config.VIDEO_FRAME_NUM
-            motion_frame = config.VIDEO_MOTION_FRAME
+        frame_num = config.VIDEO_GGUF_FRAME_NUM
+        motion_frame = config.VIDEO_GGUF_MOTION_FRAME
         if self._lora_applied:
-            sample_steps = (
-                config.VIDEO_GGUF_LORA_SAMPLE_STEPS
-                if use_gguf
-                else config.VIDEO_LORA_SAMPLE_STEPS
-            )
+            sample_steps = config.VIDEO_GGUF_LORA_SAMPLE_STEPS
         else:
             sample_steps = config.VIDEO_SAMPLE_STEPS
 
@@ -588,13 +431,8 @@ class VideoEngine:
         size = size or config.VIDEO_SIZE
         seed = seed if seed is not None else config.VIDEO_SEED
         mode = config.VIDEO_MODE
-        # GGUF uses larger chunks (81 frames) and more overlap
-        if config.VIDEO_QUANT == "gguf":
-            motion_frame = config.VIDEO_GGUF_MOTION_FRAME
-            frame_num = config.VIDEO_GGUF_FRAME_NUM
-        else:
-            motion_frame = config.VIDEO_MOTION_FRAME
-            frame_num = config.VIDEO_FRAME_NUM
+        motion_frame = config.VIDEO_GGUF_MOTION_FRAME
+        frame_num = config.VIDEO_GGUF_FRAME_NUM
         prompt = animation_prompt if animation_prompt else self._PROMPT
 
         # Re-encode text embeddings if prompt changed from what was pre-cached
@@ -603,17 +441,8 @@ class VideoEngine:
             self._pre_encode_text(prompt)
 
         if self._lora_applied:
-            # GGUF: 4 steps (LoRA's native design), FP8: 6 steps
-            if config.VIDEO_QUANT == "gguf":
-                sample_steps = sample_steps or getattr(
-                    config,
-                    "VIDEO_GGUF_LORA_SAMPLE_STEPS",
-                    config.VIDEO_LORA_SAMPLE_STEPS,
-                )
-                audio_guide_scale = config.VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE
-            else:
-                sample_steps = sample_steps or config.VIDEO_LORA_SAMPLE_STEPS
-                audio_guide_scale = config.VIDEO_LORA_AUDIO_GUIDE_SCALE
+            sample_steps = sample_steps or config.VIDEO_GGUF_LORA_SAMPLE_STEPS
+            audio_guide_scale = config.VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE
             text_guide_scale = config.VIDEO_LORA_TEXT_GUIDE_SCALE
             solver = getattr(config, "VIDEO_LORA_SOLVER", "euler")
         else:
@@ -722,11 +551,7 @@ class VideoEngine:
             1 if _skip_cfg else (2 if math.isclose(text_guide_scale, 1.0) else 3)
         )
         # VIDEO_SECS_PER_STEP is calibrated for 1 pass/step; scale by passes
-        _base_secs = (
-            config.VIDEO_GGUF_SECS_PER_STEP
-            if config.VIDEO_QUANT == "gguf"
-            else config.VIDEO_SECS_PER_STEP
-        )
+        _base_secs = config.VIDEO_SECS_PER_STEP
         _secs_per_step = _base_secs * _passes_per_step
         _denoise_secs = total_denoise_steps * _secs_per_step
         _vae_secs = (

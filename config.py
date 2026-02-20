@@ -105,17 +105,15 @@ VIDEO_LORA_SOLVER = "dpmpp_sde"  # DPM++ SDE 1st-order. SDE noise prevents error
 
 # Time estimation (seconds per denoising step per SINGLE PASS, for ETA display)
 # The ETA code in video_engine.py multiplies this by passes_per_step (1, 2, or 3).
-# Calibrate this to your GPU. Measured on RTX 4090 Laptop 16GB:
-# ~14s/pass w/ FP8 + block swap (measured RTX 4090 Laptop 16GB).
-# With LoRA 6 steps + DPM++ + audio_cfg=2.0: 2 passes/step → ~28s/step.
-VIDEO_SECS_PER_STEP = 14
+# Calibrate this to your GPU. Measured on RTX 4090 Laptop 16GB.
+VIDEO_SECS_PER_STEP = 17  # ~16.8s/pass measured (GGUF on RTX 4090 Laptop 16GB)
 
-# GGUF-specific overrides — used when VIDEO_QUANT == "gguf".
-# GGUF model is ~10GB (vs FP8 ~18.9GB).  With block swap most blocks stay
-# on GPU; CLIP/VAE fit alongside without offloading DiT blocks.
+# GGUF model settings.
+# GGUF model is ~12.8GB.  With block swap most blocks stay on GPU;
+# CLIP/VAE fit alongside without offloading DiT blocks.
 # frame_num=41 is proven safe for VAE 3D-conv on 16GB.  81 requires VAE
 # temporal tiling (future optimisation).
-VIDEO_GGUF_FRAME_NUM = 41  # 4n+1, same chunk size as FP8 (safe for VAE)
+VIDEO_GGUF_FRAME_NUM = 41  # 4n+1, safe for VAE 3D-conv on 16GB
 VIDEO_GGUF_MOTION_FRAME = 13  # Overlap frames between chunks
 VIDEO_GGUF_LORA_SAMPLE_STEPS = (
     4  # LightX2V designed for 4 steps; saves 33% denoising vs 6
@@ -123,7 +121,7 @@ VIDEO_GGUF_LORA_SAMPLE_STEPS = (
 VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE = 2.0  # 2.0 = audio CFG (2 passes/step). 1.0 skips CFG for speed but causes progressive blur/warp.
 VIDEO_GGUF_SECS_PER_STEP = 17  # Measured ~16.8s/pass avg on RTX 4090 Laptop 16GB (15.8 chunk 0, ~17.1 chunks 1-4)
 VIDEO_GGUF_ACTIVATION_RESERVE = (
-    7.0  # GiB — dequant temporaries need same headroom as FP8
+    7.0  # GiB — dequant temporaries need headroom to prevent WDDM spill
 )
 
 # Per-chunk overhead (seconds) — VAE decode + block offload/restore round-trip.
@@ -133,14 +131,13 @@ VIDEO_VAE_DECODE_SECS = 15  # Per-chunk overhead: VAE decode (~7s) + inter-chunk
 VIDEO_FIRST_CHUNK_EXTRA_SECS = 23  # CLIP encode (~3s) + VAE encode (~20s) — first chunk only, measured from run_20260220_160641
 
 # Block swap settings (for 16GB GPUs)
-# None = auto-tune based on available VRAM. With native FP8 (torch._scaled_mm),
-# blocks stay at ~470MB during compute (no dequant doubling), so many more
-# blocks can remain persistent on GPU vs the old quanto approach.
+# None = auto-tune based on available VRAM. GGUF blocks are ~320MB each;
+# on-demand dequantization creates BF16 temporaries during forward passes.
 VIDEO_BLOCKS_TO_SWAP = None  # None = auto-tune, 0 = all on GPU, 40 = swap all
 VIDEO_PREFETCH_BLOCKS = (
     1  # Async prefetch N blocks ahead (hides CPU→GPU transfer latency)
 )
-VIDEO_QUANT = "gguf"  # "gguf" (recommended) or "fp8" or None
+VIDEO_QUANT = "gguf"  # GGUF is the only supported quantization mode
 
 # GPU thermal management — pause between chunks if GPU is too hot.
 # Laptop GPUs aggressively throttle clocks at high temps, causing 2-3x
@@ -152,21 +149,8 @@ GPU_THERMAL_POLL_INTERVAL = 3  # Seconds between temp checks
 
 # Number of DiT blocks in the InfiniteTalk model (40 for 14B)
 VIDEO_NUM_DIT_BLOCKS = 40
-# Approximate size of one DiT block in bytes.
-# FP8: ~470MB, GGUF Q4_0+Q8 adapter: ~320MB.
-# Used by auto_tune_blocks_to_swap() — set based on VIDEO_QUANT.
-VIDEO_BLOCK_SIZE_BYTES_FP8 = 470_000_000
-VIDEO_BLOCK_SIZE_BYTES_GGUF = 320_000_000
-
-
-def _get_block_size():
-    """Return block size in bytes based on current VIDEO_QUANT."""
-    if VIDEO_QUANT == "gguf":
-        return VIDEO_BLOCK_SIZE_BYTES_GGUF
-    return VIDEO_BLOCK_SIZE_BYTES_FP8
-
-
-VIDEO_BLOCK_SIZE_BYTES = _get_block_size()
+# Approximate size of one DiT block in bytes (GGUF Q4_0 + Q8 adapter).
+VIDEO_BLOCK_SIZE_BYTES = 320_000_000
 
 # Model weight directories (resolved after download)
 WAN_CKPT_DIR = os.path.join(INFINITETALK_MODELS_DIR, "Wan2.1-I2V-14B-480P")
@@ -174,9 +158,6 @@ WAV2VEC_DIR = os.path.join(INFINITETALK_MODELS_DIR, "chinese-wav2vec2-base")
 INFINITETALK_CKPT_DIR = os.path.join(INFINITETALK_MODELS_DIR, "InfiniteTalk")
 INFINITETALK_SINGLE_CKPT = os.path.join(
     INFINITETALK_CKPT_DIR, "single", "infinitetalk.safetensors"
-)
-INFINITETALK_FP8_CKPT = os.path.join(
-    INFINITETALK_CKPT_DIR, "quant_models", "infinitetalk_single_fp8.safetensors"
 )
 
 # GGUF model paths
@@ -282,10 +263,9 @@ def _find_ffmpeg():
 def auto_tune_blocks_to_swap():
     """Auto-tune how many DiT blocks to swap based on available VRAM.
 
-    The native FP8 InfiniteTalk DiT has 40 blocks, each ~470MB in FP8.
-    With native FP8 (torch._scaled_mm), blocks stay at ~470MB during
-    compute — no dequantization doubling. This means we can keep many
-    more blocks persistent on GPU compared to the old quanto approach.
+    The InfiniteTalk DiT has 40 blocks, each ~320MB in GGUF Q4_0+Q8.
+    On-demand dequantization creates BF16 temporaries during forward
+    passes, so activation_reserve must account for this overhead.
 
     IMPORTANT: Call this AFTER offloading VAE/CLIP/T5 to CPU so the free
     VRAM calculation sees the maximum available memory.
@@ -310,10 +290,7 @@ def auto_tune_blocks_to_swap():
         # With 7.0 GiB reserve: ~17 persistent + 1 swap = 8.96 GiB weights,
         # leaving ~7.0 GiB headroom. Peak with intermediates ~11.5 GiB,
         # well under 16 GiB — no WDDM spill even with allocator fragmentation.
-        if VIDEO_QUANT == "gguf":
-            activation_reserve = VIDEO_GGUF_ACTIVATION_RESERVE * (1024**3)
-        else:
-            activation_reserve = 7.0 * (1024**3)
+        activation_reserve = VIDEO_GGUF_ACTIVATION_RESERVE * (1024**3)
         # Reserve 1 swap buffer slot: during prefetch, one swapped block
         # occupies GPU alongside the persistent blocks. Without this
         # reservation, the swap slot eats into activation_reserve, causing

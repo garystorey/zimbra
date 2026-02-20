@@ -136,7 +136,7 @@ Video length always matches audio length. Video resolution matches input image a
 ### Performance Optimizations
 
 1. **GGUF quantization** — Q4_0 base model (~10.2 GB) + Q8 adapter (~2.65 GB) = ~12.8 GB.
-   On-demand dequantization during forward pass. Smaller than FP8 (~18.9 GB).
+   On-demand dequantization during forward pass. Fits on 16 GB with block swap.
 
 2. **Block-level swapping with async prefetch** — Entire DiT blocks are swapped instead of
    per-layer transfers. While block N computes on GPU, block N+1 prefetches from CPU via a
@@ -166,12 +166,11 @@ All models auto-download on first run:
 | GGUF base (Q4_0)          | `city96/Wan2.1-I2V-14B-480P-gguf`       | ~10.2 GB |
 | GGUF adapter (Q8)         | `Kijai/WanVideo_comfy_GGUF`             | ~2.65 GB |
 | LightX2V LoRA             | `Kijai/WanVideo_comfy`                  | ~317 MB  |
-| InfiniteTalk FP8 (legacy) | `MeiGen-AI/InfiniteTalk`                | ~26 GB   |
 
 ## Troubleshooting
 
 - **"No CUDA GPU detected"** — Ensure NVIDIA drivers are installed and `nvidia-smi` works.
-- **"GPU out of memory"** — Close other GPU applications. Use `--video-size infinitetalk-480`. GGUF mode needs ~13 GB VRAM (27 persistent blocks + swap buffer + activation headroom). Use `--quant fp8` for legacy FP8 mode.
+- **"GPU out of memory"** — Close other GPU applications. Use `--video-size infinitetalk-480`. GGUF mode needs ~13 GB VRAM (27 persistent blocks + swap buffer + activation headroom).
 - **HuggingFace auth errors** — Run `huggingface-cli login` and accept the Chatterbox model license.
 - **FFmpeg not found** — Install FFmpeg and add to PATH, or `pip install imageio-ffmpeg`.
 - **Triton warning on Windows** — Expected and harmless (no Windows wheels available).

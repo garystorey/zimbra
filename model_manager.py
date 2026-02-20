@@ -168,17 +168,17 @@ def _hf_snapshot_download(
 
 def ensure_infinitetalk_models():
     """
-    Download all InfiniteTalk model weights if not already present.
+    Download shared InfiniteTalk model weights if not already present.
 
     Only the files actually used by the pipeline are downloaded:
 
-    From Wan-AI/Wan2.1-I2V-14B-480P (~5.3 GB with FP8 quant):
+    From Wan-AI/Wan2.1-I2V-14B-480P (~5.3 GB):
         - config.json                                          (250 B)  — WanModel init
         - Wan2.1_VAE.pth                                       (508 MB) — VAE
         - models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth (4.77 GB) — CLIP
         - xlm-roberta-large/                                   — CLIP tokenizer
         - google/                                              — T5 tokenizer
-        SKIPPED (not needed with FP8 quant):
+        SKIPPED (DiT weights come from GGUF files instead):
         - diffusion_pytorch_model-*.safetensors  (7 shards, ~66 GB)
         - models_t5_umt5-xxl-enc-bf16.pth        (~11.4 GB)
         - assets/, examples/
@@ -186,18 +186,6 @@ def ensure_infinitetalk_models():
     From TencentGameMate/chinese-wav2vec2-base (~360 MB):
         - All files (small repo)
         - model.safetensors from PR branch
-
-    From MeiGen-AI/InfiniteTalk (~26 GB for FP8 single):
-        - quant_models/infinitetalk_single_fp8.safetensors  (19.5 GB)
-        - quant_models/infinitetalk_single_fp8.json         (49 KB)
-        - quant_models/t5_fp8.safetensors                   (6.73 GB)
-        - quant_models/t5_map_fp8.json                      (12.5 KB)
-        SKIPPED:
-        - single/ (~10 GB, only for non-quant mode)
-        - multi/ (multi-person checkpoints)
-        - comfyui/ (ComfyUI nodes)
-        - assets/ (demo images)
-        - quant_models/*_multi_*, *_int8_*, *_lora* (~120+ GB)
     """
     if _is_verbose():
         _get_console().print("\n[bold]Checking InfiniteTalk models...[/bold]")
@@ -205,8 +193,8 @@ def ensure_infinitetalk_models():
     os.makedirs(config.INFINITETALK_MODELS_DIR, exist_ok=True)
 
     # 1. Wan2.1-I2V-14B-480P — only VAE, CLIP, tokenizers, config
-    #    With FP8 quant, the 7 diffusion shards (~66 GB) and T5 pth (~11.4 GB)
-    #    are NOT needed — the FP8 checkpoint and quantized T5 replace them.
+    #    The 7 diffusion shards (~66 GB) and T5 pth (~11.4 GB)
+    #    are NOT needed — the GGUF files and quantized T5 replace them.
     _hf_snapshot_download(
         repo_id=config.WAN_HF_REPO,
         local_dir=config.WAN_CKPT_DIR,
@@ -258,24 +246,6 @@ def ensure_infinitetalk_models():
         _get_console().print(
             f"  [yellow]Warning: Could not download wav2vec2 model.safetensors: {e}[/yellow]"
         )
-
-    # 3. InfiniteTalk — only FP8 single-person checkpoint + quantized T5
-    #    The full repo is ~160+ GB. We only need ~26 GB.
-    _hf_snapshot_download(
-        repo_id=config.INFINITETALK_HF_REPO,
-        local_dir=config.INFINITETALK_CKPT_DIR,
-        desc="InfiniteTalk FP8 checkpoint + quantized T5 (~26 GB)",
-        allow_patterns=[
-            "quant_models/infinitetalk_single_fp8.safetensors",
-            "quant_models/infinitetalk_single_fp8.json",
-            "quant_models/t5_fp8.safetensors",
-            "quant_models/t5_map_fp8.json",
-        ],
-        marker_files=[
-            "quant_models/infinitetalk_single_fp8.safetensors",
-            "quant_models/t5_fp8.safetensors",
-        ],
-    )
 
     if _is_verbose():
         _get_console().print("[green]InfiniteTalk models: OK[/green]")
@@ -457,8 +427,7 @@ def ensure_all_models():
     """Download all required models. Called by --download-only flag."""
     config.ensure_directories()
     ensure_infinitetalk_models()
-    if config.VIDEO_QUANT == "gguf":
-        ensure_gguf_models()
+    ensure_gguf_models()
     ensure_chatterbox_models()
     if _is_verbose():
         _get_console().print("\n[bold green]All models ready.[/bold green]")
