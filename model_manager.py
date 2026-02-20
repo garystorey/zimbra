@@ -286,6 +286,86 @@ def ensure_infinitetalk_models():
     }
 
 
+def ensure_gguf_models():
+    """
+    Download GGUF model files if not already present.
+
+    Downloads:
+    - Base Wan2.1-I2V-14B Q4_0 GGUF (~10.2 GB) from city96/Wan2.1-I2V-14B-480P-gguf
+    - InfiniteTalk Single Q8 adapter GGUF (~2.65 GB) from Kijai/WanVideo_comfy_GGUF
+    """
+    os.makedirs(config.GGUF_DIR, exist_ok=True)
+
+    # 1. Base Wan2.1 I2V 14B GGUF (Q4_0)
+    base_path = config.GGUF_BASE_PATH
+    if not os.path.isfile(base_path):
+        _get_console().print(
+            "  Downloading: [cyan]Wan2.1-I2V-14B Q4_0 GGUF (~10.2 GB)[/cyan]"
+        )
+        try:
+            from huggingface_hub import hf_hub_download
+
+            hf_hub_download(
+                repo_id=config.GGUF_BASE_HF_REPO,
+                filename=config.GGUF_BASE_FILENAME,
+                local_dir=config.GGUF_DIR,
+            )
+            _get_console().print(
+                f"  [green]Downloaded:[/green] {config.GGUF_BASE_FILENAME}"
+            )
+        except Exception as e:
+            _get_console().print(
+                f"  [red]ERROR: Failed to download base GGUF: {e}[/red]"
+            )
+            raise
+    else:
+        if _is_verbose():
+            _get_console().print(
+                f"  [green]Already downloaded:[/green] {config.GGUF_BASE_FILENAME}"
+            )
+
+    # 2. InfiniteTalk Single Q8 adapter GGUF
+    adapter_path = config.GGUF_ADAPTER_PATH
+    if not os.path.isfile(adapter_path):
+        _get_console().print(
+            "  Downloading: [cyan]InfiniteTalk Single Q8 GGUF (~2.65 GB)[/cyan]"
+        )
+        try:
+            from huggingface_hub import hf_hub_download
+
+            hf_hub_download(
+                repo_id=config.GGUF_ADAPTER_HF_REPO,
+                filename=f"InfiniteTalk/{config.GGUF_ADAPTER_FILENAME}",
+                local_dir=config.GGUF_DIR,
+            )
+            # hf_hub_download preserves subdir structure — move if needed
+            downloaded = os.path.join(
+                config.GGUF_DIR, "InfiniteTalk", config.GGUF_ADAPTER_FILENAME
+            )
+            if os.path.isfile(downloaded) and not os.path.isfile(adapter_path):
+                shutil.move(downloaded, adapter_path)
+                # Clean up empty subdir
+                inf_dir = os.path.join(config.GGUF_DIR, "InfiniteTalk")
+                if os.path.isdir(inf_dir) and not os.listdir(inf_dir):
+                    os.rmdir(inf_dir)
+            _get_console().print(
+                f"  [green]Downloaded:[/green] {config.GGUF_ADAPTER_FILENAME}"
+            )
+        except Exception as e:
+            _get_console().print(
+                f"  [red]ERROR: Failed to download adapter GGUF: {e}[/red]"
+            )
+            raise
+    else:
+        if _is_verbose():
+            _get_console().print(
+                f"  [green]Already downloaded:[/green] {config.GGUF_ADAPTER_FILENAME}"
+            )
+
+    if _is_verbose():
+        _get_console().print("[green]GGUF models: OK[/green]")
+
+
 def ensure_lora_models():
     """
     Download the LightX2V accelerator LoRA if not already present.
@@ -377,6 +457,8 @@ def ensure_all_models():
     """Download all required models. Called by --download-only flag."""
     config.ensure_directories()
     ensure_infinitetalk_models()
+    if config.VIDEO_QUANT == "gguf":
+        ensure_gguf_models()
     ensure_chatterbox_models()
     if _is_verbose():
         _get_console().print("\n[bold green]All models ready.[/bold green]")

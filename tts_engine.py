@@ -29,6 +29,47 @@ CROSSFADE_SECONDS = 0.05  # 50ms overlap
 
 
 # ---------------------------------------------------------------------------
+# Pause tag parsing
+# ---------------------------------------------------------------------------
+
+# Matches [pause:1.5], [pause:2], [pause:0.5], etc.
+_PAUSE_RE = re.compile(r"\[pause:(\d+(?:\.\d+)?)\]", re.IGNORECASE)
+
+
+def split_into_segments(text):
+    """
+    Split text into segments of speech and pauses.
+
+    Recognizes [pause:N] tags where N is seconds (int or float).
+    Returns a list of dicts:
+        {'type': 'text', 'value': 'Hello world.'}
+        {'type': 'pause', 'duration': 1.5}
+    """
+    segments = []
+    last_end = 0
+
+    for match in _PAUSE_RE.finditer(text):
+        # Text before this pause tag
+        before = text[last_end : match.start()].strip()
+        if before:
+            segments.append({"type": "text", "value": before})
+        # The pause itself
+        segments.append({"type": "pause", "duration": float(match.group(1))})
+        last_end = match.end()
+
+    # Remaining text after last pause tag
+    remaining = text[last_end:].strip()
+    if remaining:
+        segments.append({"type": "text", "value": remaining})
+
+    # If no pause tags found, return whole text as single segment
+    if not segments:
+        segments.append({"type": "text", "value": text.strip()})
+
+    return segments
+
+
+# ---------------------------------------------------------------------------
 # Sentence-boundary chunking
 # ---------------------------------------------------------------------------
 
@@ -292,34 +333,73 @@ class TTSEngine:
 
         # Auto-generate output path if not provided
         if output_path is None:
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            timestamp = getattr(config, "RUN_TIMESTAMP", None) or time.strftime(
+                "%Y%m%d_%H%M%S"
+            )
             output_path = os.path.join(config.AUDIO_OUTPUT_DIR, f"tts_{timestamp}.wav")
 
-        # Chunk text at sentence boundaries
-        chunks = chunk_text(text, max_chars=max_chunk_chars)
-        logger.info(f"Text split into {len(chunks)} chunk(s)")
-
-        # Generate audio for each chunk
-        audio_segments = []
-        for i, chunk in enumerate(chunks):
+        # Parse [pause:N] tags into text/pause segments
+        segments = split_into_segments(text)
+        has_pauses = any(s["type"] == "pause" for s in segments)
+        text_segments = [s for s in segments if s["type"] == "text"]
+        total_text_chunks = sum(
+            len(chunk_text(s["value"], max_chars=max_chunk_chars))
+            for s in text_segments
+        )
+        if has_pauses:
+            pause_total = sum(s["duration"] for s in segments if s["type"] == "pause")
             logger.info(
-                f"  Generating chunk {i + 1}/{len(chunks)}: "
-                f"{chunk[:60]}{'...' if len(chunk) > 60 else ''}"
+                f"Text split into {len(segments)} segment(s) "
+                f"({len(text_segments)} speech, "
+                f"{len(segments) - len(text_segments)} pause = {pause_total:.1f}s silence), "
+                f"{total_text_chunks} TTS chunk(s)"
             )
-            segment = self.generate_chunk(
-                text=chunk,
-                voice_ref_path=wav_ref if i == 0 else None,
-                exaggeration=exaggeration,
-                cfg_weight=cfg_weight,
-                temperature=temperature,
-            )
-            audio_segments.append(segment)
-            if progress_callback is not None:
-                progress_callback()
+        else:
+            logger.info(f"Text split into {total_text_chunks} chunk(s)")
 
-        # Stitch chunks with crossfade
+        # Generate audio for each segment
+        output_parts = []
+        chunk_counter = 0
+        first_speech = True
         crossfade_samples = int(CROSSFADE_SECONDS * SAMPLE_RATE)
-        final_audio = crossfade_stitch(audio_segments, crossfade_samples)
+
+        for seg in segments:
+            if seg["type"] == "pause":
+                silence = np.zeros(int(seg["duration"] * SAMPLE_RATE), dtype=np.float32)
+                output_parts.append(silence)
+                logger.info(f"  Inserted {seg['duration']:.1f}s pause")
+            else:
+                # Generate TTS for this text segment
+                chunks = chunk_text(seg["value"], max_chars=max_chunk_chars)
+                speech_arrays = []
+                for chunk in chunks:
+                    chunk_counter += 1
+                    logger.info(
+                        f"  Generating chunk {chunk_counter}/{total_text_chunks}: "
+                        f"{chunk[:60]}{'...' if len(chunk) > 60 else ''}"
+                    )
+                    audio = self.generate_chunk(
+                        text=chunk,
+                        voice_ref_path=wav_ref if first_speech else None,
+                        exaggeration=exaggeration,
+                        cfg_weight=cfg_weight,
+                        temperature=temperature,
+                    )
+                    speech_arrays.append(audio)
+                    first_speech = False
+                    if progress_callback is not None:
+                        progress_callback()
+
+                # Crossfade-stitch chunks within this speech segment
+                stitched = crossfade_stitch(speech_arrays, crossfade_samples)
+                output_parts.append(stitched)
+
+        # Concatenate all parts (speech segments + silence)
+        final_audio = (
+            np.concatenate(output_parts)
+            if output_parts
+            else np.array([], dtype=np.float32)
+        )
 
         # Pad with silence: 0.25s front, 0.5s end
         front_pad = np.zeros(int(0.25 * SAMPLE_RATE), dtype=np.float32)

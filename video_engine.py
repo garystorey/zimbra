@@ -32,6 +32,7 @@ import soundfile as sf
 import config
 import model_manager
 import fp8_optimization
+import gguf_loader
 
 logger = logging.getLogger(__name__)
 
@@ -279,14 +280,28 @@ class VideoEngine:
         self._cached_prompt = prompt
         logger.info("  T5 text embeddings pre-encoded and cached")
 
-    def load_model(self):
-        """Load InfiniteTalk pipeline. Downloads weights on first call."""
+    def load_model(self, progress_callback=None):
+        """Load InfiniteTalk pipeline. Downloads weights on first call.
+
+        Args:
+            progress_callback: Optional callable(completed, total, description)
+                for incremental progress reporting during loading.
+        """
         if self.is_loaded:
             logger.info("InfiniteTalk already loaded")
             return
 
+        _LOAD_STEPS = 6  # wav2vec, pipeline, weights, text, block_swap, lora
+
+        def _progress(step, desc):
+            if progress_callback is not None:
+                progress_callback(step, _LOAD_STEPS, desc)
+
         # Ensure models are downloaded
         model_manager.ensure_infinitetalk_models()
+        use_gguf = config.VIDEO_QUANT == "gguf"
+        if use_gguf:
+            model_manager.ensure_gguf_models()
 
         # Ensure vendor source is importable
         _ensure_vendor_path()
@@ -300,6 +315,7 @@ class VideoEngine:
         from src.audio_analysis.wav2vec2 import Wav2Vec2Model
 
         # --- Load wav2vec2 audio encoder ---
+        _progress(0, "Loading wav2vec2 audio encoder")
         logger.info("  Loading wav2vec2 audio encoder...")
         wav2vec_dir = config.WAV2VEC_DIR
         self.audio_encoder = Wav2Vec2Model.from_pretrained(
@@ -310,20 +326,29 @@ class VideoEngine:
         )
 
         # --- Load InfiniteTalk pipeline ---
+        _progress(1, "Loading InfiniteTalk pipeline")
         logger.info("  Loading InfiniteTalk Wan2.1-I2V-14B pipeline...")
         task = "infinitetalk-14B"
         cfg = WAN_CONFIGS[task]
 
-        # Use native FP8 (torch._scaled_mm) instead of quanto for the DiT.
-        # This gives hardware-accelerated FP8 matmul on Ada/Hopper GPUs
-        # instead of quanto's software dequantize-per-forward approach.
+        # Determine quantization mode for the pipeline constructor.
+        # Both GGUF and native FP8 create the model on meta device —
+        # weights are loaded externally after pipeline construction.
         use_native_fp8 = config.VIDEO_QUANT == "fp8" and os.path.isfile(
             config.INFINITETALK_FP8_CKPT
         )
-        quant = "native_fp8" if use_native_fp8 else config.VIDEO_QUANT
-        quant_dir = config.INFINITETALK_FP8_CKPT if use_native_fp8 else None
-        if not use_native_fp8 and config.VIDEO_QUANT == "fp8":
+        if use_gguf:
+            # GGUF: create model on meta device, load weights via gguf_loader
+            quant = "gguf"
+            quant_dir = None
+        elif use_native_fp8:
+            quant = "native_fp8"
             quant_dir = config.INFINITETALK_FP8_CKPT
+        else:
+            quant = config.VIDEO_QUANT
+            quant_dir = (
+                config.INFINITETALK_FP8_CKPT if config.VIDEO_QUANT == "fp8" else None
+            )
 
         self.pipe = wan.InfiniteTalkPipeline(
             config=cfg,
@@ -342,8 +367,17 @@ class VideoEngine:
             infinitetalk_dir=config.INFINITETALK_SINGLE_CKPT,
         )
 
-        # Load DiT weights natively as FP8 tensors with scaled_mm
-        if use_native_fp8:
+        # Load DiT weights based on quantization mode
+        _progress(2, "Loading model weights")
+        if use_gguf:
+            logger.info("  Loading DiT weights as GGUF (on-demand dequantization)...")
+            gguf_loader.load_gguf_weights(
+                self.pipe.model,
+                config.GGUF_BASE_PATH,
+                config.GGUF_ADAPTER_PATH,
+                param_dtype=self.pipe.param_dtype,
+            )
+        elif use_native_fp8:
             logger.info("  Loading DiT weights as native FP8 (torch._scaled_mm)...")
             fp8_start = time.time()
             fp8_optimization.load_fp8_weights_native(
@@ -368,6 +402,7 @@ class VideoEngine:
         # Pre-encode text prompt on GPU BEFORE block_swap fills VRAM.
         # FP8-quantized T5 on CPU is catastrophically slow (no FP8 HW support).
         # At this point only T5+VAE+CLIP are loaded; plenty of GPU room for T5.
+        _progress(3, "Pre-encoding text prompt")
         logger.info("  Pre-encoding text prompt on GPU (avoids slow FP8 on CPU)...")
         self._pre_encode_text()
 
@@ -375,6 +410,7 @@ class VideoEngine:
         # CLIP is loaded back to GPU on-demand by the vendor code (explicit
         # .to(device) in generate_infinitetalk). VAE must be restored here
         # because the vendor code assumes it stays on GPU.
+        _progress(4, "Configuring block swap")
         logger.info("  Offloading VAE/CLIP to CPU for VRAM headroom...")
         self.pipe.vae.model.cpu()
         self.pipe.clip.model.cpu()
@@ -403,6 +439,12 @@ class VideoEngine:
             )
             # Tell vendor code we handle VRAM ourselves — skip its per-layer wrapping
             self.pipe.vram_management = False
+            # GGUF: skip offload_blocks/restore_blocks during generation.
+            # GGUF model (~10GB) is small enough for CLIP/VAE to fit alongside
+            # on 16GB without moving DiT blocks off GPU.  Eliminates ~20GB
+            # round-trip PCIe transfer that caused hangs.
+            if use_gguf:
+                self.pipe._skip_block_offload = True
         else:
             # All blocks fit on GPU — move entire model there
             self.pipe.model.to(self.device)
@@ -410,8 +452,13 @@ class VideoEngine:
 
         # VAE stays on CPU — the generation loop moves it to GPU on-demand
         # for encode/decode and offloads it during denoising to free VRAM.
+        # Use bfloat16 for VAE — ~2x faster encode/decode on tensor cores,
+        # half the activation memory. The .float() in WanVAE.encode/decode
+        # converts output back to float32 for the rest of the pipeline.
+        self.pipe.vae.dtype = torch.bfloat16
 
         # Apply LoRA accelerator if enabled
+        _progress(5, "Applying LoRA")
         if self.use_lora:
             lora_path = config.LIGHTX2V_LORA_PATH
             if not os.path.isfile(lora_path):
@@ -422,9 +469,16 @@ class VideoEngine:
                     f"  Applying LightX2V LoRA (scale={config.VIDEO_LORA_SCALE})..."
                 )
                 lora_start = time.time()
-                count = _apply_lora_to_model(
-                    self.pipe.model, lora_path, lora_scale=config.VIDEO_LORA_SCALE
-                )
+                if use_gguf:
+                    # GGUF: attach LoRA as patches (applied during dequant forward)
+                    count = gguf_loader.apply_lora_as_patches(
+                        self.pipe.model, lora_path, lora_scale=config.VIDEO_LORA_SCALE
+                    )
+                else:
+                    # FP8: merge LoRA directly into weights
+                    count = _apply_lora_to_model(
+                        self.pipe.model, lora_path, lora_scale=config.VIDEO_LORA_SCALE
+                    )
                 lora_elapsed = time.time() - lora_start
                 logger.info(f"  LoRA applied ({count} weights) in {lora_elapsed:.1f}s")
                 self._lora_applied = True
@@ -525,8 +579,13 @@ class VideoEngine:
         size = size or config.VIDEO_SIZE
         seed = seed if seed is not None else config.VIDEO_SEED
         mode = config.VIDEO_MODE
-        motion_frame = config.VIDEO_MOTION_FRAME
-        frame_num = config.VIDEO_FRAME_NUM
+        # GGUF uses larger chunks (81 frames) and more overlap
+        if config.VIDEO_QUANT == "gguf":
+            motion_frame = config.VIDEO_GGUF_MOTION_FRAME
+            frame_num = config.VIDEO_GGUF_FRAME_NUM
+        else:
+            motion_frame = config.VIDEO_MOTION_FRAME
+            frame_num = config.VIDEO_FRAME_NUM
         prompt = animation_prompt if animation_prompt else self._PROMPT
 
         # Re-encode text embeddings if prompt changed from what was pre-cached
@@ -535,13 +594,24 @@ class VideoEngine:
             self._pre_encode_text(prompt)
 
         if self._lora_applied:
-            sample_steps = sample_steps or config.VIDEO_LORA_SAMPLE_STEPS
+            # GGUF: 4 steps (LoRA's native design), FP8: 6 steps
+            if config.VIDEO_QUANT == "gguf":
+                sample_steps = sample_steps or getattr(
+                    config,
+                    "VIDEO_GGUF_LORA_SAMPLE_STEPS",
+                    config.VIDEO_LORA_SAMPLE_STEPS,
+                )
+                audio_guide_scale = config.VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE
+            else:
+                sample_steps = sample_steps or config.VIDEO_LORA_SAMPLE_STEPS
+                audio_guide_scale = config.VIDEO_LORA_AUDIO_GUIDE_SCALE
             text_guide_scale = config.VIDEO_LORA_TEXT_GUIDE_SCALE
-            audio_guide_scale = config.VIDEO_LORA_AUDIO_GUIDE_SCALE
+            solver = getattr(config, "VIDEO_LORA_SOLVER", "euler")
         else:
             sample_steps = sample_steps or config.VIDEO_SAMPLE_STEPS
             text_guide_scale = config.VIDEO_TEXT_GUIDE_SCALE
             audio_guide_scale = config.VIDEO_AUDIO_GUIDE_SCALE
+            solver = "euler"
 
         # Compute sample_shift based on size and LoRA
         if self._lora_applied:
@@ -555,7 +625,9 @@ class VideoEngine:
 
         # Auto-generate output path
         if output_path is None:
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            timestamp = getattr(config, "RUN_TIMESTAMP", None) or time.strftime(
+                "%Y%m%d_%H%M%S"
+            )
             output_path = os.path.join(
                 config.VIDEO_OUTPUT_DIR, f"video_{timestamp}.mp4"
             )
@@ -641,8 +713,18 @@ class VideoEngine:
             1 if _skip_cfg else (2 if math.isclose(text_guide_scale, 1.0) else 3)
         )
         # VIDEO_SECS_PER_STEP is calibrated for 1 pass/step; scale by passes
-        _secs_per_step = config.VIDEO_SECS_PER_STEP * _passes_per_step
-        eta_secs = total_denoise_steps * _secs_per_step
+        _base_secs = (
+            config.VIDEO_GGUF_SECS_PER_STEP
+            if config.VIDEO_QUANT == "gguf"
+            else config.VIDEO_SECS_PER_STEP
+        )
+        _secs_per_step = _base_secs * _passes_per_step
+        _denoise_secs = total_denoise_steps * _secs_per_step
+        _vae_secs = (
+            num_chunks * config.VIDEO_VAE_DECODE_SECS
+            + config.VIDEO_FIRST_CHUNK_EXTRA_SECS
+        )
+        eta_secs = _denoise_secs + _vae_secs
         eta_m, eta_s = divmod(int(eta_secs), 60)
         eta_h, eta_m = divmod(eta_m, 60)
         eta_str = f"{eta_h}h {eta_m}m" if eta_h else f"{eta_m}m {eta_s}s"
@@ -650,31 +732,50 @@ class VideoEngine:
             f"Running InfiniteTalk: size={size}, "
             f"steps={sample_steps}, mode={mode}, seed={seed}, "
             f"text_cfg={text_guide_scale}, audio_cfg={audio_guide_scale}, "
-            f"passes/step={_passes_per_step}"
+            f"solver={solver}, passes/step={_passes_per_step}"
         )
         logger.info(
-            f"  ETA ≈ {eta_str} "
-            f"({num_chunks} chunk{'s' if num_chunks != 1 else ''} "
-            f"× {sample_steps} steps × {_passes_per_step} pass{'es' if _passes_per_step > 1 else ''}, "
-            f"~{_secs_per_step}s/step)"
+            f"  ETA \u2248 {eta_str} "
+            f"(denoise: {num_chunks} chunk{'s' if num_chunks != 1 else ''} "
+            f"\u00d7 {sample_steps} steps \u00d7 {_passes_per_step} pass{'es' if _passes_per_step > 1 else ''} "
+            f"\u00d7 ~{_base_secs}s/pass = {int(_denoise_secs)}s, "
+            f"VAE: ~{int(_vae_secs)}s)"
         )
         # Store step callback so the vendor denoising loop can call it
         self.pipe._step_callback = step_callback
 
         # Between-chunk callback: thermal cooldown + temperature logging
+        _temp_readings = []
+
         def _on_chunk_done(chunk_idx):
             from utils import thermal_cooldown, get_gpu_temperature
 
+            t_before = get_gpu_temperature()
+            if t_before is not None:
+                _temp_readings.append(t_before)
+            logger.debug(
+                f"[thermal] Chunk {chunk_idx - 1} finished — GPU {t_before}°C, "
+                f"threshold {config.GPU_THERMAL_THRESHOLD}°C"
+            )
+            cooldown_start = time.time()
             waited, t_start, t_end = thermal_cooldown()
             if waited > 0:
                 logger.info(
                     f"  Thermal pause before chunk {chunk_idx}: "
                     f"{t_start}°C → {t_end}°C ({waited:.0f}s)"
                 )
+                logger.debug(
+                    f"[thermal] Cooldown: paused at {cooldown_start:.1f}, "
+                    f"resumed at {time.time():.1f} "
+                    f"(waited {waited:.1f}s, {t_start}°C → {t_end}°C)"
+                )
             else:
-                t = get_gpu_temperature()
+                t = t_before if t_before is not None else get_gpu_temperature()
                 if t is not None:
                     logger.info(f"  GPU temp before chunk {chunk_idx}: {t}°C")
+                logger.debug(
+                    f"[thermal] No cooldown needed — GPU {t}°C <= {config.GPU_THERMAL_THRESHOLD}°C"
+                )
 
         self.pipe._chunk_callback = _on_chunk_done
         gen_start = time.time()
@@ -691,13 +792,28 @@ class VideoEngine:
             seed=seed,
             offload_model=True,
             max_frames_num=effective_max,
-            color_correction_strength=0.3,
+            color_correction_strength=1.0,
             extra_args=extra_args,
             pre_encoded_text=self._cached_text_embeddings,
+            solver=solver,
         )
 
         gen_elapsed = time.time() - gen_start
-        logger.info(f"Inference completed in {gen_elapsed:.1f}s")
+        # Log final temperature from end of generation
+        from utils import get_gpu_temperature
+
+        t_final = get_gpu_temperature()
+        if t_final is not None:
+            _temp_readings.append(t_final)
+        if _temp_readings:
+            avg_t = sum(_temp_readings) / len(_temp_readings)
+            max_t = max(_temp_readings)
+            logger.info(
+                f"Inference completed in {gen_elapsed:.1f}s "
+                f"(GPU temp avg={avg_t:.0f}°C, max={max_t}°C)"
+            )
+        else:
+            logger.info(f"Inference completed in {gen_elapsed:.1f}s")
 
         # --- Save video with audio ---
         _ensure_vendor_path()

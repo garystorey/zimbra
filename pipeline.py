@@ -83,7 +83,16 @@ def _estimate_video_eta(audio_duration):
     # VIDEO_SECS_PER_STEP is calibrated for 1 pass/step; scale by passes
     skip_cfg = math.isclose(text_cfg, 1.0) and math.isclose(audio_cfg, 1.0)
     passes = 1 if skip_cfg else (2 if math.isclose(text_cfg, 1.0) else 3)
-    return total_steps * config.VIDEO_SECS_PER_STEP * passes
+    base_secs = (
+        config.VIDEO_GGUF_SECS_PER_STEP
+        if config.VIDEO_QUANT == "gguf"
+        else config.VIDEO_SECS_PER_STEP
+    )
+    denoise_secs = total_steps * base_secs * passes
+    vae_secs = (
+        num_chunks * config.VIDEO_VAE_DECODE_SECS + config.VIDEO_FIRST_CHUNK_EXTRA_SECS
+    )
+    return denoise_secs + vae_secs
 
 
 def _estimate_audio_duration_from_script(script_text):
@@ -173,7 +182,10 @@ class Pipeline:
         est_audio_dur = _estimate_audio_duration_from_script(script_text)
         est_video_secs = _estimate_video_eta(est_audio_dur)
         est_tts_secs = 30 + len(chunk_text(script_text)) * 8  # ~30s load + ~8s/chunk
-        est_total = est_tts_secs + 60 + est_video_secs  # +60s for model load
+        est_video_load_secs = 60
+        est_total = (
+            est_tts_secs + est_video_load_secs + est_video_secs
+        )  # +60s for model load
         console.print(
             f"[dim]Estimated total time: ~{_fmt(est_total)} "
             f"(TTS ~{_fmt(est_tts_secs)}, "
@@ -197,7 +209,9 @@ class Pipeline:
         # TTS — Generate audio
         # -----------------------------------------------------------------
         tts_start = time.time()
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        timestamp = getattr(config, "RUN_TIMESTAMP", None) or time.strftime(
+            "%Y%m%d_%H%M%S"
+        )
         audio_output = os.path.join(config.AUDIO_OUTPUT_DIR, f"tts_{timestamp}.wav")
 
         try:
@@ -238,6 +252,11 @@ class Pipeline:
             raise
 
         timings["tts"] = time.time() - tts_start
+        logger.info(
+            f"ETA accuracy — TTS: estimated {est_tts_secs:.0f}s, "
+            f"actual {timings['tts']:.1f}s, "
+            f"diff {timings['tts'] - est_tts_secs:+.1f}s"
+        )
 
         # Unload TTS
         self.tts_engine.unload_model()
@@ -262,15 +281,29 @@ class Pipeline:
                 )
             else:
                 with _make_progress(console) as progress:
-                    load_task = progress.add_task("Loading video model", total=None)
-                    self.video_engine.load_model()
-                    progress.update(load_task, total=1, completed=1)
+                    load_task = progress.add_task("Loading video model", total=6)
+
+                    def _load_progress(step, total, desc):
+                        progress.update(
+                            load_task,
+                            completed=step,
+                            total=total,
+                        )
+
+                    self.video_engine.load_model(progress_callback=_load_progress)
+                    progress.update(
+                        load_task,
+                        completed=6,
+                        total=6,
+                        description="Loading video model",
+                    )
 
                     audio_duration = self.video_engine.get_audio_duration(audio_path)
                     total_steps = self.video_engine.estimate_total_steps(audio_duration)
 
                     # Refined ETA now that we know actual audio duration
                     refined_video_eta = _estimate_video_eta(audio_duration)
+                    est_video_secs = refined_video_eta  # update for final comparison
                     console.print(
                         f"[dim]Video ETA (refined): ~{_fmt(refined_video_eta)} "
                         f"({total_steps} steps × ~{int(refined_video_eta / max(total_steps, 1))}s/step)[/dim]"
@@ -299,6 +332,11 @@ class Pipeline:
             raise
 
         timings["video"] = time.time() - video_start
+        logger.info(
+            f"ETA accuracy — Video (gen+load): estimated {est_video_load_secs + est_video_secs:.0f}s, "
+            f"actual {timings['video']:.1f}s, "
+            f"diff {timings['video'] - (est_video_load_secs + est_video_secs):+.1f}s"
+        )
 
         # Unload video model
         self.video_engine.unload_model()
@@ -308,6 +346,11 @@ class Pipeline:
         # Summary
         # -----------------------------------------------------------------
         timings["total"] = time.time() - pipeline_start
+        logger.info(
+            f"ETA accuracy — Total: estimated {est_total:.0f}s, "
+            f"actual {timings['total']:.1f}s, "
+            f"diff {timings['total'] - est_total:+.1f}s"
+        )
 
         console.print()
         console.print(f"[bold green]Done![/bold green]  {_fmt(timings['total'])}")

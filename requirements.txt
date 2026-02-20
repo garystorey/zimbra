@@ -30,6 +30,7 @@ einops
 soundfile
 huggingface_hub
 rich
+gguf>=0.6.0
 
 # --- Chatterbox unique deps (installed separately after --no-deps) ---
 # librosa

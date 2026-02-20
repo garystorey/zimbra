@@ -79,9 +79,21 @@ def build_parser():
         default=None,
         metavar="SCALE",
         help=(
-            "Audio guidance scale (default: 1.0 with LoRA, 4.0 without). "
-            "1.0 = fastest (1 pass/step, no audio CFG). "
-            "2.0-2.5 = stronger lip sync (2 passes/step, ~2x slower)."
+            "Audio guidance scale (default: 2.0 with LoRA, 4.0 without). "
+            "1.0 = fastest (1 pass/step) but causes progressive blur. "
+            "2.0 = recommended (2 passes/step, good quality)."
+        ),
+    )
+    parser.add_argument(
+        "--quant",
+        type=str,
+        default=None,
+        choices=["gguf", "fp8"],
+        metavar="TYPE",
+        help=(
+            "Quantization type for DiT model. "
+            "'gguf' (default, recommended): Q4_0 GGUF with on-demand dequant. "
+            "'fp8': native FP8 with torch._scaled_mm."
         ),
     )
     parser.add_argument(
@@ -113,6 +125,7 @@ def setup_logging(verbose=False):
     os.makedirs(config.LOGS_DIR, exist_ok=True)
 
     timestamp = _time.strftime("%Y%m%d_%H%M%S")
+    config.RUN_TIMESTAMP = timestamp
     log_file = os.path.join(config.LOGS_DIR, f"run_{timestamp}.log")
 
     # --- File handler: always verbose ---
@@ -136,6 +149,7 @@ def setup_logging(verbose=False):
         "video_engine",
         "tts_engine",
         "model_manager",
+        "gguf_loader",
         "config",
         "utils",
         "__main__",
@@ -157,8 +171,9 @@ def setup_logging(verbose=False):
             )
         )
         root.addHandler(console_handler)
-        # Root at INFO so vendor [diag] messages are visible on console + file.
-        root.setLevel(logging.INFO)
+        # Root at DEBUG so vendor [diag] messages reach the file handler.
+        # Console handler is at DEBUG too with --verbose so user sees everything.
+        root.setLevel(logging.DEBUG)
     else:
         # Root at DEBUG so everything goes to the file, but nothing to console.
         root.setLevel(logging.DEBUG)
@@ -241,6 +256,11 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
 
+    # Apply --quant override before anything else
+    if args.quant is not None:
+        config.VIDEO_QUANT = args.quant
+        config.VIDEO_BLOCK_SIZE_BYTES = config._get_block_size()
+
     config._VERBOSE = args.verbose
     log_file = setup_logging(verbose=args.verbose)
 
@@ -291,6 +311,7 @@ def main():
         engine = VideoEngine()
         try:
             _vo_start = _time.time()
+            eta_secs = None
 
             if args.verbose:
                 engine.load_model()
@@ -303,9 +324,22 @@ def main():
                 )
             else:
                 with _make_progress(console) as progress:
-                    load_task = progress.add_task("Loading video model", total=None)
-                    engine.load_model()
-                    progress.update(load_task, total=1, completed=1)
+                    load_task = progress.add_task("Loading video model", total=6)
+
+                    def _load_progress(step, total, desc):
+                        progress.update(
+                            load_task,
+                            completed=step,
+                            total=total,
+                        )
+
+                    engine.load_model(progress_callback=_load_progress)
+                    progress.update(
+                        load_task,
+                        completed=6,
+                        total=6,
+                        description="Loading video model",
+                    )
 
                     audio_duration = engine.get_audio_duration(audio_path)
                     total_steps = engine.estimate_total_steps(audio_duration)
@@ -327,6 +361,12 @@ def main():
                     progress.update(gen_task, completed=total_steps)
 
             _vo_elapsed = _time.time() - _vo_start
+            if not args.verbose and eta_secs:
+                logging.getLogger(__name__).info(
+                    f"ETA accuracy — Video: estimated {eta_secs:.0f}s, "
+                    f"actual {_vo_elapsed:.1f}s, "
+                    f"diff {_vo_elapsed - eta_secs:+.1f}s"
+                )
             console.print()
             console.print(f"[bold green]Done![/bold green]  {_fmt(_vo_elapsed)}")
             console.print(f"  Video: {video_path}")
@@ -383,6 +423,11 @@ def main():
                     )
 
             _ao_elapsed = _time.time() - _ao_start
+            logging.getLogger(__name__).info(
+                f"ETA accuracy — TTS: estimated {est_secs:.0f}s, "
+                f"actual {_ao_elapsed:.1f}s, "
+                f"diff {_ao_elapsed - est_secs:+.1f}s"
+            )
             console.print()
             console.print(f"[bold green]Done![/bold green]  {_fmt(_ao_elapsed)}")
             console.print(f"  Audio: {audio_path}")

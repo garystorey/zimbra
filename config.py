@@ -71,6 +71,10 @@ DEFAULT_ACCELERATED = True
 DEFAULT_AUDIO_FORMAT = "wav"
 DEFAULT_FPS = 24
 
+# Run timestamp — set once at startup by setup_logging(), shared across all
+# output filenames (log, audio, video) so they can be correlated easily.
+RUN_TIMESTAMP = None  # Will be set to e.g. "20260219_201603"
+
 
 # ---------------------------------------------------------------------------
 # InfiniteTalk video engine defaults
@@ -79,8 +83,10 @@ DEFAULT_FPS = 24
 VIDEO_SIZE = "infinitetalk-480"  # "infinitetalk-480" or "infinitetalk-720"
 VIDEO_SAMPLE_STEPS = 20  # Denoising steps (default 20)
 VIDEO_MODE = "streaming"  # "streaming" for long video, "clip" for single chunk
-VIDEO_MOTION_FRAME = 9  # Driven frame length for streaming mode
-VIDEO_FRAME_NUM = 41  # Frames per chunk (must be 4n+1, internal only)
+VIDEO_MOTION_FRAME = (
+    13  # Driven frame length for streaming mode (0.52s overlap, same chunk count as 9)
+)
+VIDEO_FRAME_NUM = 41  # Frames per chunk (must be 4n+1, internal only). 81 OOMs on 16GB during LoRA merge.
 VIDEO_SEED = 42
 VIDEO_SAMPLE_RATE = 16000  # Audio sample rate for wav2vec2
 VIDEO_FPS = 25  # InfiniteTalk generates at 25 FPS
@@ -91,17 +97,40 @@ VIDEO_AUDIO_GUIDE_SCALE = 4.0  # Audio CFG (4.0 default, 2.0 with LoRA)
 VIDEO_USE_LORA = True  # Enable LightX2V distilled LoRA by default
 VIDEO_LORA_SCALE = 1.0  # LoRA merge strength
 # When LoRA is enabled, these override the defaults above:
-VIDEO_LORA_SAMPLE_STEPS = 4  # LightX2V distilled: only 4 steps needed
-VIDEO_LORA_SAMPLE_SHIFT = 2  # Lower shift for distilled model
+VIDEO_LORA_SAMPLE_STEPS = 6  # LoRA distilled for fewer steps.
+VIDEO_LORA_SAMPLE_SHIFT = 11  # ComfyUI-validated shift for LoRA + DPM++
 VIDEO_LORA_TEXT_GUIDE_SCALE = 1.0  # Must be 1.0 (no CFG) for distilled LoRA
-VIDEO_LORA_AUDIO_GUIDE_SCALE = 1.0  # Audio CFG disabled for speed (1 pass/step instead of 2). Model still receives audio conditioning in the cond pass; CFG just amplifies it. LoRA is cfg_step_distill — designed for low/no guidance.
+VIDEO_LORA_AUDIO_GUIDE_SCALE = 2.0  # Audio CFG (2 passes/step). 1.0 causes progressive blur. 2.5 too aggressive. 2.0 is the sweet spot.
+VIDEO_LORA_SOLVER = "dpmpp_sde"  # DPM++ SDE (ComfyUI uses this, NOT DPM++ 2M). SDE adds stochastic noise per step which prevents error accumulation.
 
-# Time estimation (seconds per denoising step per chunk, for ETA display)
+# Time estimation (seconds per denoising step per SINGLE PASS, for ETA display)
+# The ETA code in video_engine.py multiplies this by passes_per_step (1, 2, or 3).
 # Calibrate this to your GPU. Measured on RTX 4090 Laptop 16GB:
-# ~16s/step steady state, ~36s step 1 warmup. Average ~21s/step.
-# w/ FP8 + block swap (18 persistent / 22 swapped), 1 pass/step
-# (audio_guide_scale=1.0), 4 LoRA steps. Includes per-chunk overhead.
-VIDEO_SECS_PER_STEP = 21
+# ~14s/pass w/ FP8 + block swap (measured RTX 4090 Laptop 16GB).
+# With LoRA 6 steps + DPM++ + audio_cfg=2.0: 2 passes/step → ~28s/step.
+VIDEO_SECS_PER_STEP = 14
+
+# GGUF-specific overrides — used when VIDEO_QUANT == "gguf".
+# GGUF model is ~10GB (vs FP8 ~18.9GB).  With block swap most blocks stay
+# on GPU; CLIP/VAE fit alongside without offloading DiT blocks.
+# frame_num=41 is proven safe for VAE 3D-conv on 16GB.  81 requires VAE
+# temporal tiling (future optimisation).
+VIDEO_GGUF_FRAME_NUM = 41  # 4n+1, same chunk size as FP8 (safe for VAE)
+VIDEO_GGUF_MOTION_FRAME = 13  # Overlap frames between chunks
+VIDEO_GGUF_LORA_SAMPLE_STEPS = (
+    4  # LightX2V designed for 4 steps; saves 33% denoising vs 6
+)
+VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE = 2.0  # 2.0 = audio CFG for lip sync (2 passes/step)
+VIDEO_GGUF_SECS_PER_STEP = 16  # Measured ~15.9s/step avg on RTX 4090 Laptop 16GB
+VIDEO_GGUF_ACTIVATION_RESERVE = (
+    7.0  # GiB — dequant temporaries need same headroom as FP8
+)
+
+# Per-chunk overhead (seconds) — VAE decode + block offload/restore round-trip.
+# These are NOT included in SECS_PER_STEP; added separately in ETA calculations.
+# Conservative estimates — calibrate from "ETA accuracy" log lines after real runs.
+VIDEO_VAE_DECODE_SECS = 60  # VAE decode per chunk (with blocks offloaded for VRAM)
+VIDEO_FIRST_CHUNK_EXTRA_SECS = 50  # CLIP encode + VAE encode (first chunk only)
 
 # Block swap settings (for 16GB GPUs)
 # None = auto-tune based on available VRAM. With native FP8 (torch._scaled_mm),
@@ -111,20 +140,33 @@ VIDEO_BLOCKS_TO_SWAP = None  # None = auto-tune, 0 = all on GPU, 40 = swap all
 VIDEO_PREFETCH_BLOCKS = (
     1  # Async prefetch N blocks ahead (hides CPU→GPU transfer latency)
 )
-VIDEO_QUANT = "fp8"  # FP8 quantization (None to disable)
+VIDEO_QUANT = "gguf"  # "gguf" (recommended) or "fp8" or None
 
 # GPU thermal management — pause between chunks if GPU is too hot.
 # Laptop GPUs aggressively throttle clocks at high temps, causing 2-3x
 # slower block compute. A brief cooldown pause is faster than running
 # at throttled speeds for the entire next chunk.
-GPU_THERMAL_THRESHOLD = 75  # °C — pause if above this
+GPU_THERMAL_THRESHOLD = 70  # °C — pause if above this
 GPU_THERMAL_MAX_WAIT = 30  # Max seconds to wait for cooldown
 GPU_THERMAL_POLL_INTERVAL = 3  # Seconds between temp checks
 
 # Number of DiT blocks in the InfiniteTalk model (40 for 14B)
 VIDEO_NUM_DIT_BLOCKS = 40
-# Approximate size of one DiT block in bytes (FP8: ~470MB)
-VIDEO_BLOCK_SIZE_BYTES = 470_000_000
+# Approximate size of one DiT block in bytes.
+# FP8: ~470MB, GGUF Q4_0+Q8 adapter: ~320MB.
+# Used by auto_tune_blocks_to_swap() — set based on VIDEO_QUANT.
+VIDEO_BLOCK_SIZE_BYTES_FP8 = 470_000_000
+VIDEO_BLOCK_SIZE_BYTES_GGUF = 320_000_000
+
+
+def _get_block_size():
+    """Return block size in bytes based on current VIDEO_QUANT."""
+    if VIDEO_QUANT == "gguf":
+        return VIDEO_BLOCK_SIZE_BYTES_GGUF
+    return VIDEO_BLOCK_SIZE_BYTES_FP8
+
+
+VIDEO_BLOCK_SIZE_BYTES = _get_block_size()
 
 # Model weight directories (resolved after download)
 WAN_CKPT_DIR = os.path.join(INFINITETALK_MODELS_DIR, "Wan2.1-I2V-14B-480P")
@@ -136,6 +178,13 @@ INFINITETALK_SINGLE_CKPT = os.path.join(
 INFINITETALK_FP8_CKPT = os.path.join(
     INFINITETALK_CKPT_DIR, "quant_models", "infinitetalk_single_fp8.safetensors"
 )
+
+# GGUF model paths
+GGUF_DIR = os.path.join(INFINITETALK_MODELS_DIR, "gguf")
+GGUF_BASE_FILENAME = "wan2.1-i2v-14b-480p-Q4_0.gguf"
+GGUF_ADAPTER_FILENAME = "Wan2_1-InfiniteTalk_Single_Q8.gguf"
+GGUF_BASE_PATH = os.path.join(GGUF_DIR, GGUF_BASE_FILENAME)
+GGUF_ADAPTER_PATH = os.path.join(GGUF_DIR, GGUF_ADAPTER_FILENAME)
 
 # LightX2V accelerator LoRA
 LORA_DIR = os.path.join(INFINITETALK_MODELS_DIR, "loras")
@@ -154,6 +203,10 @@ LIGHTX2V_LORA_HF_FILE = LIGHTX2V_LORA_FILENAME
 WAN_HF_REPO = "Wan-AI/Wan2.1-I2V-14B-480P"
 WAV2VEC_HF_REPO = "TencentGameMate/chinese-wav2vec2-base"
 INFINITETALK_HF_REPO = "MeiGen-AI/InfiniteTalk"
+
+# GGUF model repos
+GGUF_BASE_HF_REPO = "city96/Wan2.1-I2V-14B-480P-gguf"
+GGUF_ADAPTER_HF_REPO = "Kijai/WanVideo_comfy_GGUF"
 
 CHATTERBOX_HF_REPO = "ResembleAI/chatterbox-turbo"
 
@@ -257,7 +310,10 @@ def auto_tune_blocks_to_swap():
         # With 7.0 GiB reserve: ~17 persistent + 1 swap = 8.96 GiB weights,
         # leaving ~7.0 GiB headroom. Peak with intermediates ~11.5 GiB,
         # well under 16 GiB — no WDDM spill even with allocator fragmentation.
-        activation_reserve = 7.0 * (1024**3)
+        if VIDEO_QUANT == "gguf":
+            activation_reserve = VIDEO_GGUF_ACTIVATION_RESERVE * (1024**3)
+        else:
+            activation_reserve = 7.0 * (1024**3)
         # Reserve 1 swap buffer slot: during prefetch, one swapped block
         # occupies GPU alongside the persistent blocks. Without this
         # reservation, the swap slot eats into activation_reserve, causing
@@ -299,6 +355,7 @@ def ensure_directories():
         INFINITETALK_MODELS_DIR,
         CHATTERBOX_MODELS_DIR,
         LORA_DIR,
+        GGUF_DIR,
     ]
     for d in dirs:
         os.makedirs(d, exist_ok=True)
