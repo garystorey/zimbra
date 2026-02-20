@@ -521,10 +521,19 @@ class VideoEngine:
         Returns the total number of step callbacks that will fire during
         generate(), accounting for streaming chunks.
         """
-        frame_num = config.VIDEO_FRAME_NUM
-        motion_frame = config.VIDEO_MOTION_FRAME
+        use_gguf = config.VIDEO_QUANT == "gguf"
+        if use_gguf:
+            frame_num = config.VIDEO_GGUF_FRAME_NUM
+            motion_frame = config.VIDEO_GGUF_MOTION_FRAME
+        else:
+            frame_num = config.VIDEO_FRAME_NUM
+            motion_frame = config.VIDEO_MOTION_FRAME
         if self._lora_applied:
-            sample_steps = config.VIDEO_LORA_SAMPLE_STEPS
+            sample_steps = (
+                config.VIDEO_GGUF_LORA_SAMPLE_STEPS
+                if use_gguf
+                else config.VIDEO_LORA_SAMPLE_STEPS
+            )
         else:
             sample_steps = config.VIDEO_SAMPLE_STEPS
 

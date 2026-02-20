@@ -74,29 +74,6 @@ def build_parser():
         ),
     )
     parser.add_argument(
-        "--audio-cfg",
-        type=float,
-        default=None,
-        metavar="SCALE",
-        help=(
-            "Audio guidance scale (default: 2.0 with LoRA, 4.0 without). "
-            "1.0 = fastest (1 pass/step) but causes progressive blur. "
-            "2.0 = recommended (2 passes/step, good quality)."
-        ),
-    )
-    parser.add_argument(
-        "--quant",
-        type=str,
-        default=None,
-        choices=["gguf", "fp8"],
-        metavar="TYPE",
-        help=(
-            "Quantization type for DiT model. "
-            "'gguf' (default, recommended): Q4_0 GGUF with on-demand dequant. "
-            "'fp8': native FP8 with torch._scaled_mm."
-        ),
-    )
-    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable verbose/debug logging",
@@ -256,11 +233,6 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
 
-    # Apply --quant override before anything else
-    if args.quant is not None:
-        config.VIDEO_QUANT = args.quant
-        config.VIDEO_BLOCK_SIZE_BYTES = config._get_block_size()
-
     config._VERBOSE = args.verbose
     log_file = setup_logging(verbose=args.verbose)
 
@@ -280,11 +252,6 @@ def main():
 
     # Resolve animation prompt
     animation_prompt = _resolve_animation(args.animation)
-
-    # Apply --audio-cfg override if specified
-    if args.audio_cfg is not None:
-        config.VIDEO_AUDIO_GUIDE_SCALE = args.audio_cfg
-        config.VIDEO_LORA_AUDIO_GUIDE_SCALE = args.audio_cfg
 
     # --video-only: skip TTS, go straight to video
     if args.video_only:
@@ -310,11 +277,11 @@ def main():
 
         engine = VideoEngine()
         try:
-            _vo_start = _time.time()
             eta_secs = None
 
             if args.verbose:
                 engine.load_model()
+                _vo_start = _time.time()
                 audio_duration = engine.get_audio_duration(audio_path)
                 total_steps = engine.estimate_total_steps(audio_duration)
                 video_path = engine.generate(
@@ -340,6 +307,7 @@ def main():
                         total=6,
                         description="Loading video model",
                     )
+                    _vo_start = _time.time()
 
                     audio_duration = engine.get_audio_duration(audio_path)
                     total_steps = engine.estimate_total_steps(audio_duration)
@@ -347,7 +315,7 @@ def main():
                     eta_secs = _estimate_video_eta(audio_duration)
                     console.print(
                         f"[dim]Video ETA: ~{_fmt(eta_secs)} "
-                        f"({total_steps} steps \u00d7 ~{config.VIDEO_SECS_PER_STEP}s/step)[/dim]"
+                        f"({total_steps} steps)[/dim]"
                     )
 
                     gen_task = progress.add_task("Generating video", total=total_steps)

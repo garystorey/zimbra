@@ -325,6 +325,39 @@ zimbra/
 
 **Status:** Compiles clean. Awaiting test to measure actual VAE decode time with block offload enabled.
 
+### Phase 14 — Denoising Performance Optimizations
+
+**Goal:** Reduce denoising loop overhead without quality loss. Hit ≤2 min/sec target.
+
+**Changes applied:**
+
+1. **Restore `torch.cuda.empty_cache()` between forward passes for GGUF** (multitalk.py): GGUF on-demand dequantization creates BF16 temporaries across 604 linear layers per pass. These temporaries fragment CUDA's free pool (+0.6G reserved/pass). Without reclaiming, reserved VRAM grows 13.2G → 16.9G over 7 passes, causing Windows WDDM to spill to system RAM (50.7s/block set vs 4.2s nominal — 12x slower). Fix: `empty_cache()` after every `self.model()` call. Cost: ~150ms/call × 20 calls = ~3s total. Prevents catastrophic WDDM spill. Note: FP8 mode doesn't need this (in-place `_scaled_mm`), but the overhead is negligible.
+
+2. **GGUF audio_cfg 2.0→1.0→2.0** (config.py `VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE`): Tried 1.0 (skip CFG, 1 pass/step) for speed — halved denoising time. However, tested output showed noticeable quality degradation (warped features, less defined detail in later chunks). Even with DPM++ SDE 2nd-order correction, audio_cfg=1.0 is insufficient for multi-chunk streaming. **Reverted to 2.0** (2 passes/step). CLI `--audio-cfg 1.0` available for max speed if quality is acceptable.
+
+3. **Remove dead motion re-noising code** (multitalk.py): The pre-loop and post-solver motion frame noising (`torch.randn_like` + `self.add_noise`) was always overwritten by the clean motion frame injection on the next line (`latent[:, :N] = latent_motion_frames`). Dead code since Phase 10's direct latent passthrough. **Saves ~20 GPU tensor operations per generation.**
+
+4. **DPM++ SDE 2nd-order multistep correction (REVERTED)** (multitalk.py): Attempted 2nd-order correction (`denoised_d = (1 + 1/(2r)) * denoised - (1/(2r)) * old_denoised`) applied to SDE drift. **Caused severe quality degradation with 2-pass CFG (audio_cfg=2.0)** — the extrapolation overshoots when denoised estimates include CFG scaling. Only worked with 1-pass mode (audio_cfg=1.0). **Reverted to 1st-order SDE** which was proven stable in Phases 12-13.
+
+**Performance (GGUF, 5.8s video, measured from run_20260220_160641):**
+
+- Denoising: 5 chunks × 4 steps × 2 passes × ~17s/pass = ~680s
+- Per-chunk overhead: 5 × ~15s (VAE decode ~7s + inter-chunk gap ~8s) = ~75s
+- First-chunk CLIP+VAE encode: ~23s
+- Total inference: 784s ≈ **~13 min → 2.2 min/sec**
+- Previous run with audio_cfg=1.0: 461s (~7.7 min) but quality degraded
+
+**Calibrated ETA constants (from run_20260220_160641):**
+
+- VIDEO_GGUF_SECS_PER_STEP: 16→17 (measured ~16.8s/pass avg, 15.8 chunk 0, ~17.1 chunks 1-4)
+- VIDEO_VAE_DECODE_SECS: 60→8→15 (VAE ~7s + inter-chunk gap ~8s per chunk)
+- VIDEO_FIRST_CHUNK_EXTRA_SECS: 50→30→23 (CLIP ~3s + VAE encode ~20s)
+- ETA accuracy: 778s estimated vs 784s actual = 0.8% error
+
+**Bug fixed:** `_estimate_video_eta` in pipeline.py/generate.py was using `VIDEO_LORA_SAMPLE_STEPS=6` instead of `VIDEO_GGUF_LORA_SAMPLE_STEPS=4`, adding 320s phantom denoising time. Also `estimate_total_steps` in video_engine.py had the same GGUF override bug. Both fixed.
+
+**Files modified:** vendor/infinitetalk/wan/multitalk.py, config.py, pipeline.py, video_engine.py, generate.py, docs/plan.md
+
 ---
 
 ## Key Design Decisions
@@ -343,19 +376,20 @@ zimbra/
 
 RTX 4090 Laptop 16GB VRAM:
 
-### GGUF mode (default, Phase 13)
+### GGUF mode (default, Phase 14)
 
 - **TTS** (~30s script): ~5-18 seconds
-- **Video** (DPM++ SDE, 4 steps, shift=11, audio_cfg=2.0): ~3.2 min per second of audio (estimated)
-- **Per-pass**: ~16s (measured, GGUF dequant + LoRA patch overhead)
-- **Per-step**: ~32s (2 passes: audio_cfg=2.0 enables audio CFG)
-- **Per-chunk denoising**: ~128s (4 steps × ~32s)
-- **Per-chunk VAE decode**: ~60s (with DiT blocks offloaded for VRAM headroom)
-- **First-chunk overhead**: ~50s (CLIP encode + VAE encode)
-- **5.3s video**: ~17 min estimated (5 chunks, includes VAE + block offload overhead)
+- **Video** (DPM++ SDE 1st-order, 4 steps, shift=11, audio_cfg=2.0): ~2.2 min per second of audio
+- **Per-pass**: ~17s (measured 16.8s avg, GGUF dequant + LoRA patch overhead, stable with empty_cache)
+- **Per-step**: ~34s (2 passes: audio_cfg=2.0 for quality)
+- **Per-chunk denoising**: ~136s (4 steps × ~34s, chunk 0 faster at ~126s)
+- **Per-chunk overhead**: ~15s (VAE decode ~7s + inter-chunk gap ~8s)
+- **First-chunk extra**: ~23s (CLIP encode ~3s + VAE encode ~20s)
+- **5.8s video**: ~13 min (5 chunks, inference 784s measured)
 - **Model size**: ~12.8GB (Q4_0 base ~10.2GB + Q8 adapter ~2.65GB)
-- **Quality**: Best output — no blur, no color fluctuations, strong lip sync with audio_cfg=2.0
-- **Advantage over FP8**: Smaller model (~12.8GB vs ~18.9GB), same quality
+- **Quality**: Good output — DPM++ SDE stochastic regularization + audio CFG
+- **Speed mode**: Use `--audio-cfg 1.0` for ~2x faster denoising (quality degrades in later chunks)
+- **Advantage over FP8**: Smaller model (~12.8GB vs ~18.9GB), faster VAE, comparable denoising
 
 ### FP8 mode (legacy, `--quant fp8`)
 

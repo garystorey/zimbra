@@ -125,11 +125,11 @@ zimbra/
 
 On RTX 4090 Laptop (16 GB VRAM):
 
-| Stage | Time         | Notes                                             |
-| ----- | ------------ | ------------------------------------------------- |
-| TTS   | ~5-18s       | Chatterbox Turbo, depends on script length        |
-| Video | ~3.2 min/s   | 4 steps (LoRA), GGUF Q4_0, 2-pass audio CFG       |
-| Total | ~17 min / 5s | Including CLIP/VAE encode, decode, chunk overhead |
+| Stage | Time           | Notes                                             |
+| ----- | -------------- | ------------------------------------------------- |
+| TTS   | ~5-18s         | Chatterbox Turbo, depends on script length        |
+| Video | ~2.2 min/s     | 4 steps (LoRA), GGUF Q4_0, 2-pass audio CFG       |
+| Total | ~13 min / 5.8s | Measured on 5.8s video (5 chunks, 784s inference) |
 
 Video length always matches audio length. Video resolution matches input image aspect ratio.
 

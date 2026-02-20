@@ -61,12 +61,26 @@ def _make_progress(console):
 
 def _estimate_video_eta(audio_duration):
     """Estimate video generation time in seconds from audio duration."""
-    frame_num = config.VIDEO_FRAME_NUM
-    motion_frame = config.VIDEO_MOTION_FRAME
+    # Use GGUF-specific overrides when in GGUF mode
+    use_gguf = config.VIDEO_QUANT == "gguf"
+    if use_gguf:
+        frame_num = config.VIDEO_GGUF_FRAME_NUM
+        motion_frame = config.VIDEO_GGUF_MOTION_FRAME
+    else:
+        frame_num = config.VIDEO_FRAME_NUM
+        motion_frame = config.VIDEO_MOTION_FRAME
     if config.VIDEO_USE_LORA:
-        sample_steps = config.VIDEO_LORA_SAMPLE_STEPS
+        sample_steps = (
+            config.VIDEO_GGUF_LORA_SAMPLE_STEPS
+            if use_gguf
+            else config.VIDEO_LORA_SAMPLE_STEPS
+        )
         text_cfg = config.VIDEO_LORA_TEXT_GUIDE_SCALE
-        audio_cfg = config.VIDEO_LORA_AUDIO_GUIDE_SCALE
+        audio_cfg = (
+            config.VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE
+            if use_gguf
+            else config.VIDEO_LORA_AUDIO_GUIDE_SCALE
+        )
     else:
         sample_steps = config.VIDEO_SAMPLE_STEPS
         text_cfg = config.VIDEO_TEXT_GUIDE_SCALE
@@ -84,9 +98,7 @@ def _estimate_video_eta(audio_duration):
     skip_cfg = math.isclose(text_cfg, 1.0) and math.isclose(audio_cfg, 1.0)
     passes = 1 if skip_cfg else (2 if math.isclose(text_cfg, 1.0) else 3)
     base_secs = (
-        config.VIDEO_GGUF_SECS_PER_STEP
-        if config.VIDEO_QUANT == "gguf"
-        else config.VIDEO_SECS_PER_STEP
+        config.VIDEO_GGUF_SECS_PER_STEP if use_gguf else config.VIDEO_SECS_PER_STEP
     )
     denoise_secs = total_steps * base_secs * passes
     vae_secs = (

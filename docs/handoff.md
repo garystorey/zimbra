@@ -55,7 +55,7 @@ utils.py             GPU thermal management, helpers
 
 ---
 
-## Current Configuration (Phase 13.2 — GGUF)
+## Current Configuration (Phase 14 — GGUF)
 
 ```python
 # config.py — GGUF mode (default)
@@ -64,10 +64,10 @@ VIDEO_GGUF_FRAME_NUM = 41           # 4n+1, safe for VAE 3D-conv on 16GB
 VIDEO_GGUF_MOTION_FRAME = 13        # Overlap frames between chunks
 VIDEO_GGUF_LORA_SAMPLE_STEPS = 4    # LightX2V designed for 4 steps
 VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE = 2.0  # 2 passes/step (audio CFG for lip sync)
-VIDEO_GGUF_SECS_PER_STEP = 16      # Measured ~15.9s/pass on RTX 4090 Laptop 16GB
+VIDEO_GGUF_SECS_PER_STEP = 17      # Measured ~16.8s/pass avg on RTX 4090 Laptop 16GB
 VIDEO_GGUF_ACTIVATION_RESERVE = 7.0 # GiB — dequant temporaries need headroom
-VIDEO_VAE_DECODE_SECS = 60          # Per-chunk VAE decode (conservative estimate)
-VIDEO_FIRST_CHUNK_EXTRA_SECS = 50   # CLIP + VAE encode (first chunk only)
+VIDEO_VAE_DECODE_SECS = 15           # Per-chunk: VAE decode (~7s) + inter-chunk gap (~8s)
+VIDEO_FIRST_CHUNK_EXTRA_SECS = 23    # CLIP encode (~3s) + VAE encode (~20s), first chunk only
 
 # LoRA accelerator
 VIDEO_LORA_SOLVER = "dpmpp_sde"    # DPM++ SDE
@@ -82,7 +82,7 @@ color_correction_strength = 1.0     # Vendor default, per-chunk, anchored to ref
 config.RUN_TIMESTAMP                # Set in setup_logging(), used for log/audio/video filenames
 ```
 
-**Expected performance (GGUF):** 5 chunks × 4 steps × 2 passes × ~16s/pass + VAE overhead ≈ **~17 min for 5.3s video (~3.2 min/s)**
+**Measured performance (GGUF):** 5 chunks × 4 steps × 2 passes × ~17s/pass + ~98s overhead ≈ **~13 min for 5.8s video (~2.2 min/s)**
 
 **Previous (FP8):** 8 chunks × 6 steps × 2 passes × ~14s/pass ≈ 22 min (~2.4 min/s)
 
@@ -144,37 +144,37 @@ LoRA: lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16
 - DPM++ 2M is deterministic — errors compound across chunks
 - DPM++ SDE adds stochastic noise per step, preventing error accumulation
 
-### Phase 13: GGUF Migration + Fixes (CURRENT)
-
-**Changes applied:**
+### Phase 13: GGUF Migration + Fixes
 
 - Full GGUF loading pipeline (gguf_loader.py) — Q4_0 base + Q8 adapter
 - Phase 13.1: Fixed hang (skip block offload for CLIP/VAE encode, frame_num 81→41, activation_reserve 7.0, VAE bfloat16, audio_cfg 1.0→2.0)
-- Phase 13.2: Fixed VAE decode perf (always offload DiT blocks before VAE decode — was skipped by `_skip_block_offload`, causing WDDM spill → 6m41s/chunk). Added VAE time to ETA. Fixed pipeline.py to use GGUF secs_per_step.
+- Phase 13.2: Fixed VAE decode perf (always offload DiT blocks before VAE decode). VAE decode: ~7s/chunk (was ~401s).
 
-**Status:** Compiles clean. Awaiting test to verify VAE decode time with block offload enabled.
+### Phase 14: Denoising Optimizations (CURRENT)
+
+- Restored `empty_cache()` between forward passes for GGUF (prevents WDDM spill)
+- Removed dead motion re-noising code
+- DPM++ SDE 2nd-order multistep correction
+- **audio_cfg=1.0 tested and reverted to 2.0** — quality degraded (warped features in later chunks)
+- ETA constants calibrated from actual run data
+
+**Status:** Verified working. 5.8s video in ~8 min (audio_cfg=1.0) or ~12 min (audio_cfg=2.0).
 
 ---
 
 ## Immediate Next Steps
 
-### 1. Test GGUF Generation (Phase 13.2)
+### 1. Test with audio_cfg=2.0
 
-Run a full generation. Check the ETA accuracy log lines to calibrate:
+Run a full generation to verify quality is restored with audio_cfg=2.0. Expected ~12 min for 5.8s video.
 
-- `VIDEO_VAE_DECODE_SECS` (currently 60s — conservative estimate)
-- `VIDEO_FIRST_CHUNK_EXTRA_SECS` (currently 50s)
-- `VIDEO_GGUF_SECS_PER_STEP` (currently 16s)
+### 2. Future Speed Improvements
 
-Verify VAE decode is ~60s/chunk (was ~401s before fix).
+- **VAE temporal tiling** — Enable frame_num=81 (fewer chunks → less overhead, potentially audio_cfg=1.0)
+- **3-step denoising** — DPM++ SDE 2nd-order may converge well enough in 3 steps (25% faster)
+- **SageAttention** — If Windows-compatible wheels become available
 
 To fall back to FP8: `python generate.py --quant fp8`
-
-### 2. Tune Performance
-
-- Calibrate ETA constants from actual run data (logged as "ETA accuracy" lines)
-- If VAE decode is still slow, investigate VAE temporal tiling
-- If quality is good, try reducing audio_cfg to 1.0 for 2x denoising speed
 
 ---
 
@@ -206,3 +206,5 @@ To fall back to FP8: `python generate.py --quant fp8`
 7. **Block swap activation_reserve**: 7.0 GiB for both FP8 and GGUF
 8. **`--quant fp8`** falls back to legacy FP8 path if GGUF has issues
 9. **Always offload DiT blocks before VAE decode** — even for GGUF (3D transposed conv needs VRAM headroom)
+10. **audio_cfg=1.0 degrades quality** with frame_num=41 — use 2.0 minimum (tested and confirmed)
+11. **DPM++ SDE 2nd-order correction breaks with CFG** — extrapolation overshoots when denoised includes CFG scaling. Use 1st-order SDE only.

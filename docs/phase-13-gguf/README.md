@@ -31,10 +31,10 @@ Replace FP8 (~18.9GB) with GGUF Q4_0 base + Q8 adapter (~12.8GB) to match ComfyU
 
 ### GGUF Models
 
-| Model | Source | Size |
-|---|---|---|
-| Wan2.1-I2V-14B Q4_0 (base) | `city96/Wan2.1-I2V-14B-480P-gguf` | ~10.2 GB |
-| InfiniteTalk Single Q8 (adapter) | `Kijai/WanVideo_comfy_GGUF` | ~2.65 GB |
+| Model                            | Source                            | Size     |
+| -------------------------------- | --------------------------------- | -------- |
+| Wan2.1-I2V-14B Q4_0 (base)       | `city96/Wan2.1-I2V-14B-480P-gguf` | ~10.2 GB |
+| InfiniteTalk Single Q8 (adapter) | `Kijai/WanVideo_comfy_GGUF`       | ~2.65 GB |
 
 ---
 
@@ -100,11 +100,11 @@ The `_skip_block_offload` flag was correct for CLIP+VAE **encode** (first chunk 
 
 ### Expected Impact
 
-| Metric | Before Fix | After Fix |
-|---|---|---|
-| VAE decode per chunk | ~401s (WDDM spill) | ~60s (estimated) |
-| Block offload/restore overhead | 0s (skipped) | ~8s per chunk |
-| Total for 5 chunks (5.3s audio) | 46+ min | ~17 min |
+| Metric                          | Before Fix         | After Fix        |
+| ------------------------------- | ------------------ | ---------------- |
+| VAE decode per chunk            | ~401s (WDDM spill) | ~60s (estimated) |
+| Block offload/restore overhead  | 0s (skipped)       | ~8s per chunk    |
+| Total for 5 chunks (5.3s audio) | 46+ min            | ~17 min          |
 
 ---
 
@@ -115,20 +115,24 @@ VIDEO_QUANT = "gguf"
 VIDEO_GGUF_FRAME_NUM = 41
 VIDEO_GGUF_MOTION_FRAME = 13
 VIDEO_GGUF_LORA_SAMPLE_STEPS = 4
-VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE = 2.0   # 2 passes/step
-VIDEO_GGUF_SECS_PER_STEP = 16             # ~15.9s/pass measured
+VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE = 2.0   # 2 passes/step (1.0 tested — quality degraded)
+VIDEO_GGUF_SECS_PER_STEP = 17             # ~16.8s/pass avg measured
 VIDEO_GGUF_ACTIVATION_RESERVE = 7.0       # GiB
-VIDEO_VAE_DECODE_SECS = 60                # Per-chunk (conservative)
-VIDEO_FIRST_CHUNK_EXTRA_SECS = 50         # First chunk CLIP+VAE encode
+VIDEO_VAE_DECODE_SECS = 15                # Per-chunk: VAE decode (~7s) + inter-chunk gap (~8s)
+VIDEO_FIRST_CHUNK_EXTRA_SECS = 23         # CLIP encode (~3s) + VAE encode (~20s)
 VIDEO_LORA_SOLVER = "dpmpp_sde"
 GPU_THERMAL_THRESHOLD = 70
 ```
 
 ## Status
 
-All fixes compile clean. Awaiting test run to:
-- Verify VAE decode is ~60s/chunk (was ~401s)
-- Calibrate ETA constants from "ETA accuracy" log lines
+**Verified.** First GGUF run completed successfully (5.8s video, 5 chunks):
+
+- VAE decode: ~7s/chunk (was ~401s before fix — **57× faster**)
+- Denoising: ~17s/pass avg (stable, no WDDM spill)
+- VRAM: 8.7-8.9G allocated / 13.2-13.5G reserved
+- GPU temp: 67-68°C (no throttling)
+- ETA constants calibrated from actual measurements
 
 ## Files Modified
 

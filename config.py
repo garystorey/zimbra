@@ -101,7 +101,7 @@ VIDEO_LORA_SAMPLE_STEPS = 6  # LoRA distilled for fewer steps.
 VIDEO_LORA_SAMPLE_SHIFT = 11  # ComfyUI-validated shift for LoRA + DPM++
 VIDEO_LORA_TEXT_GUIDE_SCALE = 1.0  # Must be 1.0 (no CFG) for distilled LoRA
 VIDEO_LORA_AUDIO_GUIDE_SCALE = 2.0  # Audio CFG (2 passes/step). 1.0 causes progressive blur. 2.5 too aggressive. 2.0 is the sweet spot.
-VIDEO_LORA_SOLVER = "dpmpp_sde"  # DPM++ SDE (ComfyUI uses this, NOT DPM++ 2M). SDE adds stochastic noise per step which prevents error accumulation.
+VIDEO_LORA_SOLVER = "dpmpp_sde"  # DPM++ SDE 1st-order. SDE noise prevents error accumulation across chunks. 2nd-order tried and reverted (overshoots with CFG).
 
 # Time estimation (seconds per denoising step per SINGLE PASS, for ETA display)
 # The ETA code in video_engine.py multiplies this by passes_per_step (1, 2, or 3).
@@ -120,8 +120,8 @@ VIDEO_GGUF_MOTION_FRAME = 13  # Overlap frames between chunks
 VIDEO_GGUF_LORA_SAMPLE_STEPS = (
     4  # LightX2V designed for 4 steps; saves 33% denoising vs 6
 )
-VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE = 2.0  # 2.0 = audio CFG for lip sync (2 passes/step)
-VIDEO_GGUF_SECS_PER_STEP = 16  # Measured ~15.9s/step avg on RTX 4090 Laptop 16GB
+VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE = 2.0  # 2.0 = audio CFG (2 passes/step). 1.0 skips CFG for speed but causes progressive blur/warp.
+VIDEO_GGUF_SECS_PER_STEP = 17  # Measured ~16.8s/pass avg on RTX 4090 Laptop 16GB (15.8 chunk 0, ~17.1 chunks 1-4)
 VIDEO_GGUF_ACTIVATION_RESERVE = (
     7.0  # GiB — dequant temporaries need same headroom as FP8
 )
@@ -129,8 +129,8 @@ VIDEO_GGUF_ACTIVATION_RESERVE = (
 # Per-chunk overhead (seconds) — VAE decode + block offload/restore round-trip.
 # These are NOT included in SECS_PER_STEP; added separately in ETA calculations.
 # Conservative estimates — calibrate from "ETA accuracy" log lines after real runs.
-VIDEO_VAE_DECODE_SECS = 60  # VAE decode per chunk (with blocks offloaded for VRAM)
-VIDEO_FIRST_CHUNK_EXTRA_SECS = 50  # CLIP encode + VAE encode (first chunk only)
+VIDEO_VAE_DECODE_SECS = 15  # Per-chunk overhead: VAE decode (~7s) + inter-chunk gap (~8s: thermal check, block restore, motion latent)
+VIDEO_FIRST_CHUNK_EXTRA_SECS = 23  # CLIP encode (~3s) + VAE encode (~20s) — first chunk only, measured from run_20260220_160641
 
 # Block swap settings (for 16GB GPUs)
 # None = auto-tune based on available VRAM. With native FP8 (torch._scaled_mm),
