@@ -25,25 +25,26 @@ Content creators, developers, and hobbyists who need talking-head video generati
 
 ### 2.1 Input Requirements
 
-| Input | Format | Required | Default |
-|-------|--------|----------|---------|
-| **Script text** | Plain text file (.txt) or inline string | Yes | `inputs/scripts/default.txt` |
-| **Portrait image** | PNG, JPG, JPEG, BMP, or WebP | Yes | `inputs/images/default.png` |
-| **Voice reference** | WAV or MP3 (>5 seconds) | Recommended | `inputs/voice_ref/default.mp3` (built-in voice if absent) |
-| **Animation prompt** | Plain text file (.txt) or inline string | No | `inputs/animation/default.txt` |
+| Input                | Format                                  | Required    | Default                                                   |
+| -------------------- | --------------------------------------- | ----------- | --------------------------------------------------------- |
+| **Script text**      | Plain text file (.txt) or inline string | Yes         | `inputs/scripts/default.txt`                              |
+| **Portrait image**   | PNG, JPG, JPEG, BMP, or WebP            | Yes         | `inputs/images/default.png`                               |
+| **Voice reference**  | WAV or MP3 (>5 seconds)                 | Recommended | `inputs/voice_ref/default.mp3` (built-in voice if absent) |
+| **Animation prompt** | Plain text file (.txt) or inline string | No          | `inputs/animation/default.txt`                            |
 
 ### 2.2 Output Requirements
 
-| Output | Format | Location |
-|--------|--------|----------|
-| **Video** | MP4 (H.264 + AAC) at 25 FPS | `outputs/video/video_TIMESTAMP.mp4` |
-| **Audio** | WAV at 24 kHz | `outputs/audio/tts_TIMESTAMP.wav` |
-| **Contact sheet** | PNG grid of frames (1/sec) | `outputs/video/video_TIMESTAMP_contact_sheet.png` |
-| **Debug log** | Text log (always DEBUG level) | `outputs/logs/run_TIMESTAMP.log` |
+| Output            | Format                        | Location                                          |
+| ----------------- | ----------------------------- | ------------------------------------------------- |
+| **Video**         | MP4 (H.264 + AAC) at 25 FPS   | `outputs/video/video_TIMESTAMP.mp4`               |
+| **Audio**         | WAV at 24 kHz                 | `outputs/audio/tts_TIMESTAMP.wav`                 |
+| **Contact sheet** | PNG grid of frames (1/sec)    | `outputs/video/video_TIMESTAMP_contact_sheet.png` |
+| **Debug log**     | Text log (always DEBUG level) | `outputs/logs/run_TIMESTAMP.log`                  |
 
 ### 2.3 Functional Capabilities
 
 #### FR-1: Text-to-Speech Generation
+
 - Clone voice from a reference audio clip (>5 seconds)
 - Support `[pause:N]` tags for inserting silence of N seconds
 - Chunk long text at sentence boundaries with 50ms cosine crossfade stitching
@@ -51,6 +52,7 @@ Content creators, developers, and hobbyists who need talking-head video generati
 - Support `--audio-only` mode (skip video generation)
 
 #### FR-2: Talking-Head Video Generation
+
 - Generate lip-synced video from portrait image + audio
 - Support streaming mode for unlimited-length video (overlapping chunks)
 - Video length matches audio length exactly
@@ -59,6 +61,7 @@ Content creators, developers, and hobbyists who need talking-head video generati
 - Generate contact sheet PNG for quality review
 
 #### FR-3: Pipeline Orchestration
+
 - Sequential GPU usage: TTS fully unloaded before video model loads
 - Estimated total time displayed before generation begins
 - Rich progress bars for each pipeline stage
@@ -66,16 +69,18 @@ Content creators, developers, and hobbyists who need talking-head video generati
 - All output files share a timestamp for correlation
 
 #### FR-4: Model Management
+
 - All model weights (~20 GB) auto-download on first run
 - Pre-flight download check with progress bar showing total files and size
 - Atomic downloads (temp file → rename) to prevent corruption
 - Subsequent runs skip download if files exist
 
 #### FR-5: Installation
+
 - One-click Windows installer (`install.bat`)
 - Auto-detect Python 3.10-3.12
 - Resolve dependency conflicts between Chatterbox and InfiniteTalk automatically
-- Clone InfiniteTalk vendor source
+- Clone patched InfiniteTalk fork ([garystorey/InfiniteTalk](https://github.com/garystorey/InfiniteTalk)) into `vendor/`
 - Post-install verification of all critical imports
 
 ---
@@ -84,29 +89,31 @@ Content creators, developers, and hobbyists who need talking-head video generati
 
 ### 3.1 Performance
 
-| Metric | Target | Measured |
-|--------|--------|----------|
-| TTS generation | <20s for ~30-word script | ~5-18s |
-| Video generation | ≤1.5 min per second of audio | **1.06 min/sec** |
-| Total pipeline (8s video) | <15 min | 10.5 min |
-| ETA accuracy | <5% error | ~1% error |
+| Metric                    | Target                       | Measured         |
+| ------------------------- | ---------------------------- | ---------------- |
+| TTS generation            | <20s for ~30-word script     | ~5-18s           |
+| Video generation          | ≤1.5 min per second of audio | **1.06 min/sec** |
+| Total pipeline (8s video) | <15 min                      | 10.5 min         |
+| ETA accuracy              | <5% error                    | ~1% error        |
 
 ### 3.2 Hardware Requirements
 
-| Requirement | Minimum | Recommended |
-|-------------|---------|-------------|
-| **GPU** | NVIDIA with 16 GB VRAM | RTX 4090 (Desktop or Laptop) |
-| **System RAM** | 16 GB | 32 GB |
-| **Disk space** | 30 GB free | 50 GB free |
-| **OS** | Windows 10 | Windows 11 |
+| Requirement    | Minimum                | Recommended                  |
+| -------------- | ---------------------- | ---------------------------- |
+| **GPU**        | NVIDIA with 16 GB VRAM | RTX 4090 (Desktop or Laptop) |
+| **System RAM** | 16 GB                  | 32 GB                        |
+| **Disk space** | 30 GB free             | 50 GB free                   |
+| **OS**         | Windows 10             | Windows 11                   |
 
 ### 3.3 Reliability
+
 - GPU OOM errors caught and reported with actionable message
 - Thermal management: auto-pause between chunks if GPU exceeds 70°C
 - Graceful handling of KeyboardInterrupt with model cleanup
 - Logging always captures full debug output to file regardless of `--verbose`
 
 ### 3.4 Usability
+
 - Sensible defaults for all parameters — `generate.bat` with zero arguments produces output
 - Rich progress bars (not raw log spam) in normal mode
 - `--verbose` flag for full debug output when troubleshooting
@@ -168,34 +175,34 @@ flowchart TD
 
 ### 6.1 Modes
 
-| Mode | Command | Description |
-|------|---------|-------------|
-| **Full pipeline** | `generate.bat` | TTS → Video → MP4 |
-| **Audio only** | `generate.bat --audio-only` | TTS only, skip video |
-| **Video only** | `generate.bat --video-only path/to/audio.wav` | Video from existing audio |
+| Mode              | Command                                       | Description               |
+| ----------------- | --------------------------------------------- | ------------------------- |
+| **Full pipeline** | `generate.bat`                                | TTS → Video → MP4         |
+| **Audio only**    | `generate.bat --audio-only`                   | TTS only, skip video      |
+| **Video only**    | `generate.bat --video-only path/to/audio.wav` | Video from existing audio |
 
 ### 6.2 Options
 
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--animation TEXT` | string/file | `inputs/animation/default.txt` | Animation style description |
-| `--audio-cfg SCALE` | float | 1.0 | Audio guidance scale (2.0 = stronger lip sync, 2× slower) |
-| `--blocks-to-swap N` | int | auto-tune | DiT blocks to swap CPU↔GPU (0-40) |
-| `--prefetch-blocks N` | int | 1 | Async prefetch blocks ahead |
-| `--verbose` | flag | off | Debug logging to console |
+| Flag                  | Type        | Default                        | Description                                               |
+| --------------------- | ----------- | ------------------------------ | --------------------------------------------------------- |
+| `--animation TEXT`    | string/file | `inputs/animation/default.txt` | Animation style description                               |
+| `--audio-cfg SCALE`   | float       | 1.0                            | Audio guidance scale (2.0 = stronger lip sync, 2× slower) |
+| `--blocks-to-swap N`  | int         | auto-tune                      | DiT blocks to swap CPU↔GPU (0-40)                         |
+| `--prefetch-blocks N` | int         | 1                              | Async prefetch blocks ahead                               |
+| `--verbose`           | flag        | off                            | Debug logging to console                                  |
 
 ---
 
 ## 7. Model Dependencies
 
-| Model | Size | Source | License |
-|-------|------|--------|---------|
-| Chatterbox Turbo | ~700 MB | ResembleAI/chatterbox-turbo | MIT |
-| Wan2.1-I2V-14B (VAE+CLIP) | ~5.3 GB | Wan-AI/Wan2.1-I2V-14B-480P | Apache 2.0 |
-| chinese-wav2vec2-base | ~360 MB | TencentGameMate/chinese-wav2vec2-base | MIT |
-| GGUF base Q4_0 | ~10.2 GB | city96/Wan2.1-I2V-14B-480P-gguf | Apache 2.0 |
-| GGUF adapter Q8 | ~2.65 GB | Kijai/WanVideo_comfy_GGUF | Apache 2.0 |
-| LightX2V I2V LoRA | ~738 MB | Kijai/WanVideo_comfy | Apache 2.0 |
+| Model                     | Size     | Source                                | License    |
+| ------------------------- | -------- | ------------------------------------- | ---------- |
+| Chatterbox Turbo          | ~700 MB  | ResembleAI/chatterbox-turbo           | MIT        |
+| Wan2.1-I2V-14B (VAE+CLIP) | ~5.3 GB  | Wan-AI/Wan2.1-I2V-14B-480P            | Apache 2.0 |
+| chinese-wav2vec2-base     | ~360 MB  | TencentGameMate/chinese-wav2vec2-base | MIT        |
+| GGUF base Q4_0            | ~10.2 GB | city96/Wan2.1-I2V-14B-480P-gguf       | Apache 2.0 |
+| GGUF adapter Q8           | ~2.65 GB | Kijai/WanVideo_comfy_GGUF             | Apache 2.0 |
+| LightX2V I2V LoRA         | ~738 MB  | Kijai/WanVideo_comfy                  | Apache 2.0 |
 
 ---
 
@@ -214,12 +221,12 @@ flowchart TD
 
 ## 9. Success Criteria
 
-| Criterion | Target | Status |
-|-----------|--------|--------|
-| Fresh install from git clone works without manual steps (beyond HF login) | Pass | ✅ |
-| First-run model download completes with progress indication | Pass | ✅ |
-| 8s video generates in <15 min on RTX 4090 Laptop | Pass | ✅ (10.5 min) |
-| Output video has consistent face/color across chunks | Pass | ✅ |
-| Lip sync is visually acceptable | Pass | ✅ |
-| GPU OOM handled gracefully (not a crash) | Pass | ✅ |
-| Ctrl+C cleanly unloads models | Pass | ✅ |
+| Criterion                                                                 | Target | Status        |
+| ------------------------------------------------------------------------- | ------ | ------------- |
+| Fresh install from git clone works without manual steps (beyond HF login) | Pass   | ✅            |
+| First-run model download completes with progress indication               | Pass   | ✅            |
+| 8s video generates in <15 min on RTX 4090 Laptop                          | Pass   | ✅ (10.5 min) |
+| Output video has consistent face/color across chunks                      | Pass   | ✅            |
+| Lip sync is visually acceptable                                           | Pass   | ✅            |
+| GPU OOM handled gracefully (not a crash)                                  | Pass   | ✅            |
+| Ctrl+C cleanly unloads models                                             | Pass   | ✅            |

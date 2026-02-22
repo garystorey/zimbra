@@ -51,7 +51,7 @@ WINDOWS_PYTHON_SEARCH_PATHS = [
 PYTORCH_INDEX = "https://download.pytorch.org/whl/cu121"
 XFORMERS_INDEX = "https://download.pytorch.org/whl/cu124"
 
-INFINITETALK_REPO = "https://github.com/MeiGen-AI/InfiniteTalk.git"
+INFINITETALK_REPO = "https://github.com/garystorey/InfiniteTalk.git"
 
 # Prebuilt flash_attn Windows wheel for Python 3.10 + torch 2.4.x + CUDA 12.4
 # (kingbri1/flash-attention — bdashore3 redirects here)

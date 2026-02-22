@@ -4,49 +4,9 @@ Known opportunities not yet implemented in this MVP, ordered by priority.
 
 ---
 
-## 1. Fork InfiniteTalk to Own Repository
+## 1. ~~Fork InfiniteTalk to Own Repository~~ ✅ Done
 
-**Priority: High — Do this first.**
-
-Currently, `install.py` clones the upstream MeiGen-AI/InfiniteTalk repo into `vendor/infinitetalk/` and our patches are applied on top as local modifications. This is fragile:
-
-- Upstream changes can break our patches silently
-- Re-running install overwrites our modifications
-- Patches are not version-controlled in a deployable way
-- Contributors can't easily see or review the vendor changes
-
-**Plan:**
-
-1. Create a new GitHub repo (e.g. `<your-org>/infinitetalk-zimbra`)
-2. Fork from `MeiGen-AI/InfiniteTalk` at the current pinned commit
-3. Apply all existing vendor patches as proper commits with descriptive messages:
-   - Block swap + async prefetch (`wan/modules/multitalk_model.py`)
-   - Single-person attention optimization (`wan/modules/multitalk_model.py`)
-   - DPM++ SDE solver (`wan/multitalk.py`)
-   - `_skip_cfg` optimization (`wan/multitalk.py`)
-   - Direct latent passthrough (`wan/multitalk.py`)
-   - `torch.cuda.empty_cache()` between passes (`wan/multitalk.py`)
-   - Block offload before VAE decode (`wan/multitalk.py`)
-   - VAE offload after decode (`wan/multitalk.py`)
-   - Bilinear resize (`wan/multitalk.py`)
-   - FFmpeg CRF 10→1 (`wan/utils/multitalk_utils.py`)
-   - Remove `torch_gc()` + `@torch.compile` from hot path (`wan/utils/multitalk_utils.py`)
-4. Tag the release (e.g. `v0.1.0-zimbra`)
-5. Update `install.py` to clone from the fork instead of upstream:
-   ```python
-   # Before:
-   git clone https://github.com/MeiGen-AI/InfiniteTalk vendor/infinitetalk
-   # After:
-   git clone https://github.com/<your-org>/infinitetalk-zimbra vendor/infinitetalk
-   ```
-6. Remove any post-clone patch logic from `install.py` (patches are now in the fork)
-
-**Benefits:**
-
-- Vendor patches are version-controlled and reviewable
-- Install is deterministic — no risk of upstream breaking us
-- Future customizations (below) can be developed directly in the fork
-- Can track upstream changes and cherry-pick selectively
+Completed. Fork at [garystorey/InfiniteTalk](https://github.com/garystorey/InfiniteTalk) contains all vendor patches. `install.py` now clones from the fork. Future changes: develop locally in `vendor/infinitetalk/`, then PR to the fork.
 
 ---
 

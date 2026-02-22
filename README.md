@@ -110,7 +110,7 @@ zimbra/
 | Component           | Library                                                       | Notes                                          |
 | ------------------- | ------------------------------------------------------------- | ---------------------------------------------- |
 | **TTS**             | [Chatterbox Turbo](https://github.com/resemble-ai/chatterbox) | 350M params, instant voice cloning, ~4 GB VRAM |
-| **Video**           | [InfiniteTalk](https://github.com/MeiGen-AI/InfiniteTalk)     | Wan2.1-I2V-14B, audio-driven, any art style    |
+| **Video**           | [InfiniteTalk](https://github.com/garystorey/InfiniteTalk)    | Wan2.1-I2V-14B, audio-driven, any art style    |
 | **CLI**             | Python `argparse`                                             | Grouped options, sensible defaults             |
 | **Post-processing** | FFmpeg                                                        | Audio/video muxing at 25 FPS                   |
 
@@ -180,5 +180,5 @@ All models auto-download on first run:
 This project integrates open-source models. See individual model repositories for their licenses:
 
 - [Chatterbox](https://github.com/resemble-ai/chatterbox) — MIT
-- [InfiniteTalk](https://github.com/MeiGen-AI/InfiniteTalk) — Apache 2.0
+- [InfiniteTalk](https://github.com/garystorey/InfiniteTalk) (fork of [MeiGen-AI/InfiniteTalk](https://github.com/MeiGen-AI/InfiniteTalk)) — Apache 2.0
 - [Wan2.1](https://github.com/Wan-Video/Wan2.1) — Apache 2.0

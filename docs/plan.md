@@ -16,16 +16,16 @@ Models run **sequentially** — TTS is fully unloaded (0 GB VRAM) before the vid
 
 ## 2. Technology Stack
 
-| Component            | Library                                                                         | Why                                                                                                                                 |
-| -------------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| **TTS**              | [Chatterbox Turbo](https://github.com/resemble-ai/chatterbox) (350 M params)    | Instant voice cloning from ~10 s reference clip. Paralinguistic tags (`[laugh]`, `[cough]`). ~4 GB VRAM. 24 kHz output.             |
-| **Video**            | [InfiniteTalk](https://github.com/MeiGen-AI/InfiniteTalk) (Wan2.1-I2V-14B base) | Audio-driven (wav2vec2). Any art style (photo/cartoon/3D). Arbitrary aspect ratios. 480p/720p. Streaming mode for unlimited length. |
-| **Quantization**     | GGUF Q4_0 base + Q8 adapter (~12.8 GB)                                          | On-demand dequantization. Ported from city96/ComfyUI-GGUF (Apache 2.0). Matches ComfyUI workflow.                                   |
-| **LoRA Accelerator** | LightX2V I2V rank-64 distilled LoRA (738 MB)                                    | Reduces denoising from 20 steps to 4. Applied as patches during GGUF dequant forward — no dequant→merge→requant needed.             |
-| **Solver**           | DPM++ SDE (sde-dpmsolver++) 1st-order                                           | Stochastic noise prevents deterministic error accumulation across streaming chunks. Matches ComfyUI reference workflow.             |
-| **VRAM Management**  | Block-level swap with async CUDA stream prefetch (Kijai approach)               | Swap entire DiT blocks (~320 MB each GGUF). Async prefetch hides transfer latency behind compute. Auto-tuned based on free VRAM.    |
-| **CLI**              | Python `argparse`                                                               | Simplest interface. Easy to wrap in a UI later.                                                                                     |
-| **Post-processing**  | FFmpeg                                                                          | Mux audio+video at 25 FPS. Contact sheet generation for quality review.                                                             |
+| Component            | Library                                                                                                                                          | Why                                                                                                                                 |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| **TTS**              | [Chatterbox Turbo](https://github.com/resemble-ai/chatterbox) (350 M params)                                                                     | Instant voice cloning from ~10 s reference clip. Paralinguistic tags (`[laugh]`, `[cough]`). ~4 GB VRAM. 24 kHz output.             |
+| **Video**            | [InfiniteTalk](https://github.com/garystorey/InfiniteTalk) (Wan2.1-I2V-14B base, fork of [MeiGen-AI](https://github.com/MeiGen-AI/InfiniteTalk)) | Audio-driven (wav2vec2). Any art style (photo/cartoon/3D). Arbitrary aspect ratios. 480p/720p. Streaming mode for unlimited length. |
+| **Quantization**     | GGUF Q4_0 base + Q8 adapter (~12.8 GB)                                                                                                           | On-demand dequantization. Ported from city96/ComfyUI-GGUF (Apache 2.0). Matches ComfyUI workflow.                                   |
+| **LoRA Accelerator** | LightX2V I2V rank-64 distilled LoRA (738 MB)                                                                                                     | Reduces denoising from 20 steps to 4. Applied as patches during GGUF dequant forward — no dequant→merge→requant needed.             |
+| **Solver**           | DPM++ SDE (sde-dpmsolver++) 1st-order                                                                                                            | Stochastic noise prevents deterministic error accumulation across streaming chunks. Matches ComfyUI reference workflow.             |
+| **VRAM Management**  | Block-level swap with async CUDA stream prefetch (Kijai approach)                                                                                | Swap entire DiT blocks (~320 MB each GGUF). Async prefetch hides transfer latency behind compute. Auto-tuned based on free VRAM.    |
+| **CLI**              | Python `argparse`                                                                                                                                | Simplest interface. Easy to wrap in a UI later.                                                                                     |
+| **Post-processing**  | FFmpeg                                                                                                                                           | Mux audio+video at 25 FPS. Contact sheet generation for quality review.                                                             |
 
 ---
 
@@ -40,7 +40,7 @@ Models run **sequentially** — TTS is fully unloaded (0 GB VRAM) before the vid
 | **FFmpeg**                 | In PATH or auto-detected via `imageio-ffmpeg`           |
 | **HuggingFace account**    | Required for Chatterbox model download                  |
 | **Visual C++ Build Tools** | NOT needed — all packages have prebuilt wheels          |
-| **Git**                    | Recommended (for cloning InfiniteTalk repo)             |
+| **Git**                    | Recommended (for cloning InfiniteTalk fork)             |
 
 ---
 
@@ -70,7 +70,7 @@ The order matters — later installs can override earlier versions. `install.py`
 | 4b   | `pip install -r requirements.txt`                                               | InfiniteTalk deps (excludes gradio, mlflow, dashscope)                                     |
 | 5a   | `chatterbox-tts --no-deps`                                                      | Gets Chatterbox without touching any deps (avoids torch/diffusers conflicts)               |
 | 5b   | Chatterbox unique deps: `librosa spacy-pkuseg==1.0.1 s3tokenizer conformer ...` | Only non-conflicting deps installed separately                                             |
-| 6    | `git clone InfiniteTalk → vendor/infinitetalk`                                  | Vendor source needed for pipeline imports                                                  |
+| 6    | `git clone garystorey/InfiniteTalk → vendor/infinitetalk`                       | Patched fork — all vendor patches pre-applied                                              |
 | 7    | Create runtime directories, verify all imports                                  | Catch install failures immediately                                                         |
 
 ### 4.3 Dependency Conflict Resolution
@@ -158,13 +158,14 @@ zimbra/
 │   └── animation/default.txt
 ├── outputs/                    # Generated files (gitignored)
 ├── models/                     # Downloaded model weights (gitignored, ~20 GB)
-├── vendor/infinitetalk/        # Cloned InfiniteTalk source with patches (gitignored)
+├── vendor/infinitetalk/        # Cloned from garystorey/InfiniteTalk fork (gitignored)
 ├── venv/                       # Virtual environment (gitignored)
 └── docs/
     ├── plan.md                 # This document — single system reference
     ├── history.md              # Development phases, research, rejected approaches
     ├── prd.md                  # Product Requirements Document
-    └── tdd.md                  # Technical Design Document
+    ├── tdd.md                  # Technical Design Document
+    └── future-enhancements.md  # Backlog of known improvement opportunities
 ```
 
 ---
@@ -249,7 +250,11 @@ TTS (Chatterbox Turbo): ~4.16 GB (fully unloaded before video)
 
 ## 9. Vendor Patches
 
-Patches applied to `vendor/infinitetalk/` that are **essential** for correct operation on 16 GB VRAM:
+Patches are maintained in the [garystorey/InfiniteTalk](https://github.com/garystorey/InfiniteTalk) fork (forked from MeiGen-AI/InfiniteTalk). `install.py` clones this fork into `vendor/infinitetalk/`. All patches are version-controlled in the fork — no post-clone patching needed.
+
+Future workflow: develop locally in `vendor/infinitetalk/`, then PR to the fork.
+
+Patches that are **essential** for correct operation on 16 GB VRAM:
 
 ### 9.1 Block Swap (`wan/modules/multitalk_model.py`)
 

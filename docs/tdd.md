@@ -25,7 +25,7 @@ graph TB
     end
 
     subgraph "Vendor Code"
-        IT[vendor/infinitetalk/<br/>Patched InfiniteTalk source]
+        IT[vendor/infinitetalk/<br/>garystorey/InfiniteTalk fork]
     end
 
     subgraph "External"
@@ -316,7 +316,7 @@ flowchart TD
     I --> J[requirements.txt<br/>InfiniteTalk deps]
     J --> K["chatterbox-tts --no-deps"]
     K --> L[Chatterbox unique deps<br/>librosa, spacy-pkuseg, etc.]
-    L --> M[git clone InfiniteTalk → vendor/]
+    L --> M[git clone garystorey/InfiniteTalk → vendor/]
     M --> N[Create runtime directories]
     N --> O[Verify all imports]
 
@@ -477,7 +477,9 @@ graph TD
 
 ## 10. Vendor Patches Summary
 
-Patches applied to `vendor/infinitetalk/` that are **essential** for correct operation:
+Patches maintained in the [garystorey/InfiniteTalk](https://github.com/garystorey/InfiniteTalk) fork. `install.py` clones this fork into `vendor/infinitetalk/` — no post-clone patching needed.
+
+Patches that are **essential** for correct operation:
 
 | File                             | Patch                                             | Purpose                                    |
 | -------------------------------- | ------------------------------------------------- | ------------------------------------------ |

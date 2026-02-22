@@ -8,12 +8,12 @@ This document traces the MVP development from concept through 15 phases of itera
 
 ### Video Engine Selection
 
-| Candidate              | Result   | Why                                                                                  |
-| ---------------------- | -------- | ------------------------------------------------------------------------------------ |
-| **EchoMimicV2**        | Rejected | SD 1.5-based, square-only (512×512). First prototype worked but quality was limited. |
-| **Hallo / Hallo2**     | Rejected | SD 1.5-based, square-only, no arbitrary aspect ratios.                               |
-| **HunyuanVideo-Avatar** | Rejected | Minimum 24 GB VRAM natively. Could not fit on 16 GB.                                 |
-| **InfiniteTalk**       | ✅ Winner | Wan2.1-I2V-14B base. Audio-driven, any art style, arbitrary aspect ratios, streaming. |
+| Candidate               | Result    | Why                                                                                   |
+| ----------------------- | --------- | ------------------------------------------------------------------------------------- |
+| **EchoMimicV2**         | Rejected  | SD 1.5-based, square-only (512×512). First prototype worked but quality was limited.  |
+| **Hallo / Hallo2**      | Rejected  | SD 1.5-based, square-only, no arbitrary aspect ratios.                                |
+| **HunyuanVideo-Avatar** | Rejected  | Minimum 24 GB VRAM natively. Could not fit on 16 GB.                                  |
+| **InfiniteTalk**        | ✅ Winner | Wan2.1-I2V-14B base. Audio-driven, any art style, arbitrary aspect ratios, streaming. |
 
 ### TTS Engine Selection
 
@@ -21,26 +21,26 @@ Chatterbox Turbo was selected for instant voice cloning from ~10s reference clip
 
 ### Quantization Approach
 
-| Approach                        | Result   | Why                                                                                     |
-| ------------------------------- | -------- | --------------------------------------------------------------------------------------- |
-| **FP8** (optimum-quanto)        | Rejected | Model is ~18.9 GB — too large for 16 GB. Required aggressive block swap (17/23 split). |
-| **GGUF Q4_0 + Q8 adapter**     | ✅ Winner | ~12.8 GB total. More headroom for activations. Matches ComfyUI's model format.          |
+| Approach                   | Result    | Why                                                                                    |
+| -------------------------- | --------- | -------------------------------------------------------------------------------------- |
+| **FP8** (optimum-quanto)   | Rejected  | Model is ~18.9 GB — too large for 16 GB. Required aggressive block swap (17/23 split). |
+| **GGUF Q4_0 + Q8 adapter** | ✅ Winner | ~12.8 GB total. More headroom for activations. Matches ComfyUI's model format.         |
 
 ### LoRA Selection
 
-| LoRA                            | Result   | Why                                                                                     |
-| ------------------------------- | -------- | --------------------------------------------------------------------------------------- |
-| **T2V rank-32** (317 MB)        | Rejected | Wrong model type (Text-to-Video, not Image-to-Video). Caused progressive blur.          |
-| **I2V rank-64** (738 MB)        | ✅ Winner | Correct Image-to-Video variant. Enables audio_cfg=1.0 + frame_num=81. Matches ComfyUI. |
+| LoRA                     | Result    | Why                                                                                    |
+| ------------------------ | --------- | -------------------------------------------------------------------------------------- |
+| **T2V rank-32** (317 MB) | Rejected  | Wrong model type (Text-to-Video, not Image-to-Video). Caused progressive blur.         |
+| **I2V rank-64** (738 MB) | ✅ Winner | Correct Image-to-Video variant. Enables audio_cfg=1.0 + frame_num=81. Matches ComfyUI. |
 
 ### Solver Selection
 
-| Solver               | Result   | Why                                                                                      |
-| -------------------- | -------- | ---------------------------------------------------------------------------------------- |
-| **Euler**            | Rejected | Significantly slower. Does not work at low step counts. Phase 10.                        |
-| **DPM++ 2M**         | Rejected | Deterministic — errors compound across streaming chunks. Phase 12.                       |
-| **DPM++ SDE 2nd**    | Rejected | Extrapolation overshoots when denoised includes CFG scaling. Phase 14.                   |
-| **DPM++ SDE 1st**    | ✅ Winner | Stochastic noise prevents error accumulation. Matches ComfyUI reference workflow.        |
+| Solver            | Result    | Why                                                                               |
+| ----------------- | --------- | --------------------------------------------------------------------------------- |
+| **Euler**         | Rejected  | Significantly slower. Does not work at low step counts. Phase 10.                 |
+| **DPM++ 2M**      | Rejected  | Deterministic — errors compound across streaming chunks. Phase 12.                |
+| **DPM++ SDE 2nd** | Rejected  | Extrapolation overshoots when denoised includes CFG scaling. Phase 14.            |
+| **DPM++ SDE 1st** | ✅ Winner | Stochastic noise prevents error accumulation. Matches ComfyUI reference workflow. |
 
 ---
 
@@ -110,6 +110,7 @@ Chatterbox Turbo was selected for instant voice cloning from ~10s reference clip
 ### Phase 10: Progressive Blur Investigation
 
 **Tried and learned:**
+
 - `audio_cfg=1.0` → progressive blur in later chunks (with T2V LoRA — root cause found in Phase 15)
 - Euler solver + 4 steps + shift=2 → **significantly slower, doesn't work** ⚠️
 - `motion_frame=25` → doubled chunk count without fixing blur
@@ -118,6 +119,7 @@ Chatterbox Turbo was selected for instant voice cloning from ~10s reference clip
 ### Phase 11: ComfyUI Alignment Attempt
 
 **Tried and learned:**
+
 - Implemented DPM++ 2M solver (but ComfyUI actually uses DPM++ SDE — misidentified scheduler)
 - `frame_num=81` → OOM during LoRA merge with FP8 (~18.9 GB model)
 - `audio_cfg=2.5` → over-guidance artifacts
@@ -172,15 +174,15 @@ Throughout development, several Windows-specific issues were encountered and res
 
 ### Package Compatibility
 
-| Issue | Resolution |
-| ----- | ---------- |
-| `spacy-pkuseg` required C++ build tools | Pin `==1.0.1` — prebuilt Windows wheels since Jul 2025 |
-| `flash_attn` has no official Windows wheels | Use prebuilt wheels from [kingbri1/flash-attention](https://github.com/kingbri1/flash-attention) |
-| `xformers` cu121 index lacks torch 2.4.1 wheels | Install from cu124 index (wheel only checks torch version, not CUDA) |
-| `transformers` 5.x removed MT5Tokenizer | Pin `<5` — breaks diffusers at import time |
-| `xfuser` 0.4.2+ needs torch 2.5+ | Pin `==0.4.1` |
-| `SageAttention` won't compile on Windows | Excluded entirely — no Windows torch 2.4.x wheels |
-| `pip.exe` file locking errors | Use `python -m pip` instead |
+| Issue                                           | Resolution                                                                                       |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `spacy-pkuseg` required C++ build tools         | Pin `==1.0.1` — prebuilt Windows wheels since Jul 2025                                           |
+| `flash_attn` has no official Windows wheels     | Use prebuilt wheels from [kingbri1/flash-attention](https://github.com/kingbri1/flash-attention) |
+| `xformers` cu121 index lacks torch 2.4.1 wheels | Install from cu124 index (wheel only checks torch version, not CUDA)                             |
+| `transformers` 5.x removed MT5Tokenizer         | Pin `<5` — breaks diffusers at import time                                                       |
+| `xfuser` 0.4.2+ needs torch 2.5+                | Pin `==0.4.1`                                                                                    |
+| `SageAttention` won't compile on Windows        | Excluded entirely — no Windows torch 2.4.x wheels                                                |
+| `pip.exe` file locking errors                   | Use `python -m pip` instead                                                                      |
 
 ### VRAM Management on Windows
 
@@ -214,6 +216,7 @@ LoRA: lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16
 ```
 
 **MVP alignment with ComfyUI:**
+
 - GGUF Q4_0 base + Q8 adapter ✓
 - DPM++ SDE solver ✓
 - shift=11 ✓
@@ -224,6 +227,7 @@ LoRA: lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16
 - Block swap with async prefetch ✓
 
 **Where we differ:**
+
 - `steps=4` (not 6) — LightX2V designed for 4; saves 33% denoising time
 - `motion_frame=9` (not 25) — 25 froze 43% of frames; 9 = 12% frozen, better lip sync
 
@@ -251,17 +255,25 @@ The vendor's per-layer VRAM management used `copy.deepcopy().to(GPU)` which was 
 
 For streaming mode, the motion latent for the next chunk is saved BEFORE VAE decode (in latent space). This eliminates cumulative VAE reconstruction error that would otherwise degrade quality across chunks. The latent is injected directly into the next chunk's initial frames.
 
+### Post-MVP: Fork Integration
+
+- Created GitHub fork at [garystorey/InfiniteTalk](https://github.com/garystorey/InfiniteTalk) (forked from MeiGen-AI/InfiniteTalk)
+- All vendor patches from Phases 3-15 committed to the fork as a single PR ([#1](https://github.com/garystorey/InfiniteTalk/pull/1))
+- `install.py` updated to clone from the fork instead of upstream
+- Vendor patches are now version-controlled and reviewable
+- Future workflow: develop locally in `vendor/infinitetalk/`, PR to fork, merge
+
 ---
 
 ## Removed/Legacy Code
 
-| Item                    | Status  | Notes                                                          |
-| ----------------------- | ------- | -------------------------------------------------------------- |
-| `fp8_optimization.py`   | Legacy  | Native FP8 matmul. Kept for `--quant fp8` fallback.           |
-| TeaCache                | Removed | Never useful at low step counts (warmup prevents skipping).   |
-| SageAttention           | Removed | Won't compile on Windows with torch 2.4.x.                    |
-| DPM++ 2M solver         | Kept    | In vendor code but not used. DPM++ SDE is the correct solver. |
-| DPM++ SDE 2nd-order     | Reverted| Breaks with CFG. 1st-order only.                              |
-| Euler solver             | Kept    | In vendor code but never used. Significantly slower.           |
-| `--frame-num` CLI flag  | Removed | Video always matches audio length. frame_num is internal only. |
-| Per-layer VRAM mgmt     | Replaced| Vendor's approach replaced by block-level swap.                |
+| Item                   | Status   | Notes                                                          |
+| ---------------------- | -------- | -------------------------------------------------------------- |
+| `fp8_optimization.py`  | Legacy   | Native FP8 matmul. Kept for `--quant fp8` fallback.            |
+| TeaCache               | Removed  | Never useful at low step counts (warmup prevents skipping).    |
+| SageAttention          | Removed  | Won't compile on Windows with torch 2.4.x.                     |
+| DPM++ 2M solver        | Kept     | In vendor code but not used. DPM++ SDE is the correct solver.  |
+| DPM++ SDE 2nd-order    | Reverted | Breaks with CFG. 1st-order only.                               |
+| Euler solver           | Kept     | In vendor code but never used. Significantly slower.           |
+| `--frame-num` CLI flag | Removed  | Video always matches audio length. frame_num is internal only. |
+| Per-layer VRAM mgmt    | Replaced | Vendor's approach replaced by block-level swap.                |
