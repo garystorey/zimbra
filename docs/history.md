@@ -166,6 +166,24 @@ The breakthrough phase. Achieved ComfyUI-matching quality and performance.
 
 **Result:** 8.2s video in 10.5 min total (1.06 min/sec). Matches ComfyUI reference workflow.
 
+### Phase 16: TTS Quality Fixes
+
+Three issues discovered when testing with multi-sentence dialogue lines (e.g. `I said "I'm sorry. I'm not the movie. I'm just the trailer."`):
+
+1. **Phantom pauses** — Chatterbox inserted ~3-second pauses after "I said" and after "I'm sorry" when the entire line was sent as a single TTS call.
+2. **Text truncation** — "I'm just the trailer" was never spoken. Chatterbox silently dropped the tail of multi-sentence input.
+3. **Voice clone drift** — Output voice didn't closely match the reference.
+
+**Fixes applied:**
+
+- **Sub-sentence splitting** — Each line is now split at `.!?` boundaries via `split_into_sentences()` before sending to Chatterbox. A 6-line script with one multi-sentence line produces 9 clean TTS calls instead of 6. Sub-sentences within a line are joined with 100ms gaps (vs 200ms between lines). `count_tts_chunks()` updated to reflect sub-sentence count.
+- **Quote stripping** — `normalize_text()` now removes all `"` characters before TTS. Smart quotes (`""`) are first converted to ASCII `"` (existing behavior), then all `"` are stripped. Quotes are never spoken aloud and caused Chatterbox to insert phantom pauses and truncate text.
+- **Voice clone tuning** — `top_k` 50→40, `top_p` 0.85→0.8 for slightly tighter voice matching. Temperature kept at 0.6 (0.5 caused looping → 38.6s output for 22s script; 0.4 caused severe looping → 132.8s output).
+
+**Result:** 6-line joke script generates 9 chunks in ~19s → 22.5s audio. No phantom pauses, no truncation, all text spoken.
+
+Files modified: `tts_engine.py`, `config.py`
+
 ---
 
 ## Windows Compatibility Discoveries

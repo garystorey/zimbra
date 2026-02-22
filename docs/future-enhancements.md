@@ -23,7 +23,7 @@ Verify and harden that multiline `default.txt` files (scripts, animation prompts
 - Newlines within a paragraph are collapsed to spaces before TTS chunking (avoid mid-word breaks)
 - Blank lines between paragraphs are preserved as natural pauses (or converted to `[pause:N]`)
 - Very long files (multiple paragraphs, 1000+ words) chunk correctly without truncation
-- Unicode characters (em dashes, curly quotes, accented characters) pass through cleanly
+- Unicode characters (em dashes, curly quotes, accented characters) pass through cleanly — **Partially done (Phase 16):** `normalize_text()` handles smart quotes, em/en dashes, ellipsis, non-breaking spaces. All `"` stripped before TTS.
 - Animation prompt multiline files are joined into a single string for the video engine
 - Windows-style line endings (`\r\n`) are handled identically to Unix (`\n`)
 
@@ -33,17 +33,17 @@ Verify and harden that multiline `default.txt` files (scripts, animation prompts
 
 **Priority: High — Voice clone fidelity.**
 
-The current TTS pipeline produces good voice cloning but there is room to improve how closely the output matches the reference voice.
+The current TTS pipeline produces good voice cloning with Phase 16 fixes (sub-sentence splitting, quote stripping, tuned sampling). Further improvements possible:
 
-| Improvement                       | Expected Impact                        | Notes                                                                                                                                                                                                                       |
-| --------------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Longer voice reference**        | Better timbre matching                 | Current minimum is 5s. 15-30s of clean speech gives Chatterbox more speaker embedding signal.                                                                                                                               |
-| **Reference audio preprocessing** | Cleaner speaker embedding              | Normalize to -23 LUFS, trim silence, remove background noise before passing to Chatterbox. Could use `noisereduce` or `demucs` for source separation.                                                                       |
-| **Multi-reference blending**      | More robust speaker embedding          | Average embeddings from multiple clips of the same speaker to reduce per-clip variance.                                                                                                                                     |
-| **Temperature tuning**            | Reduce artifacts / improve naturalness | Chatterbox Turbo's `temperature` param (default 0.8) controls sampling randomness. Lower = more deterministic but may sound flat; higher = more expressive but risks artifacts. Sweep 0.5-1.0 to find sweet spot per voice. |
-| **Chunk overlap increase**        | Smoother crossfades                    | Current 50ms cosine crossfade works well. Could experiment with 100-200ms overlap for longer utterances.                                                                                                                    |
-| **Post-processing EQ matching**   | Tonal consistency with reference       | Apply spectral envelope matching between generated audio and reference using `pyloudnorm` + FFT-based EQ to reduce tonal drift.                                                                                             |
-| **Alternative TTS models**        | Better quality at cost of speed        | Evaluate newer voice cloning models (e.g. F5-TTS, XTTS-v2) if Chatterbox quality plateaus. Would need `--no-deps` approach for dependency isolation.                                                                        |
+| Improvement                       | Expected Impact                  | Status / Notes                                                                                                                                        |
+| --------------------------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Longer voice reference**        | Better timbre matching           | Current minimum is 5s. 15-30s of clean speech gives Chatterbox more speaker embedding signal.                                                         |
+| **Reference audio preprocessing** | Cleaner speaker embedding        | Normalize to -23 LUFS, trim silence, remove background noise before passing to Chatterbox. Could use `noisereduce` or `demucs` for source separation. |
+| **Multi-reference blending**      | More robust speaker embedding    | Average embeddings from multiple clips of the same speaker to reduce per-clip variance.                                                               |
+| ~~**Temperature tuning**~~        | ~~Reduce artifacts~~             | ✅ **Done (Phase 16).** Swept 0.4–0.8. temp=0.4 → 132.8s looping; 0.5 → 38.6s looping; 0.6 = sweet spot. Also tuned top_k 50→40, top_p 0.85→0.8.      |
+| **Chunk overlap increase**        | Smoother crossfades              | Current 50ms cosine crossfade works well. Could experiment with 100-200ms overlap for longer utterances.                                              |
+| **Post-processing EQ matching**   | Tonal consistency with reference | Apply spectral envelope matching between generated audio and reference using `pyloudnorm` + FFT-based EQ to reduce tonal drift.                       |
+| **Alternative TTS models**        | Better quality at cost of speed  | Evaluate newer voice cloning models (e.g. F5-TTS, XTTS-v2) if Chatterbox quality plateaus. Would need `--no-deps` approach for dependency isolation.  |
 
 ---
 

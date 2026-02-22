@@ -35,6 +35,92 @@ CROSSFADE_SECONDS = 0.05  # 50ms overlap
 # Matches [pause:1.5], [pause:2], [pause:0.5], etc.
 _PAUSE_RE = re.compile(r"\[pause:(\d+(?:\.\d+)?)\]", re.IGNORECASE)
 
+# Unicode → ASCII replacements that confuse TTS tokenizers
+_UNICODE_REPLACEMENTS = {
+    "\u2018": "'",  # left single quote
+    "\u2019": "'",  # right single quote (smart apostrophe)
+    "\u201c": '"',  # left double quote
+    "\u201d": '"',  # right double quote
+    "\u201a": "'",  # single low-9 quote
+    "\u201e": '"',  # double low-9 quote
+    "\u2013": "-",  # en dash
+    "\u2014": "-",  # em dash
+    "\u2026": "...",  # horizontal ellipsis
+    "\u00a0": " ",  # non-breaking space
+}
+
+
+def normalize_text(text):
+    """Replace Unicode smart quotes/dashes with ASCII equivalents for TTS."""
+    for unicode_char, ascii_char in _UNICODE_REPLACEMENTS.items():
+        text = text.replace(unicode_char, ascii_char)
+    # Strip double quotation marks — never spoken aloud, confuse TTS into
+    # phantom pauses and truncation (e.g. 'I said "I'm sorry.' → long pause)
+    text = text.replace('"', "")
+    # Collapse multiple spaces (but preserve newlines for line-based splitting)
+    text = re.sub(r" {2,}", " ", text)
+    return text.strip()
+
+
+def _split_script_to_segments(text):
+    """Split script text into TTS segments preserving line-based structure.
+
+    Each line in the script is one natural sentence/thought. [pause:N] tags
+    insert explicit silence. Lines without pause tags get a controlled
+    inter-sentence gap instead.
+
+    Returns list of dicts:
+        {'type': 'text', 'value': 'sentence text'}
+        {'type': 'pause', 'duration': 1.5}
+    """
+    text = normalize_text(text)
+    segments = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # Extract [pause:N] tag if present
+        pause_match = _PAUSE_RE.search(line)
+        # Get the text portion (everything except the pause tag)
+        if pause_match:
+            text_part = (
+                line[: pause_match.start()] + line[pause_match.end() :]
+            ).strip()
+        else:
+            text_part = line
+        # Add the text segment
+        if text_part:
+            segments.append({"type": "text", "value": text_part})
+        # Add the pause segment
+        if pause_match:
+            segments.append({"type": "pause", "duration": float(pause_match.group(1))})
+    return segments
+
+
+def trim_silence(audio, sr=24000, threshold_db=-40, tail_ms=200, lead_ms=50):
+    """Trim leading and trailing silence from audio array.
+
+    Prevents Chatterbox from padding chunks with excessive silence
+    or repeated low-energy artifacts. Also trims leading silence so
+    crossfade stitching doesn't create double-silence gaps.
+    """
+    if len(audio) == 0:
+        return audio
+    # Convert threshold from dB to linear amplitude
+    threshold = 10 ** (threshold_db / 20.0)
+    abs_audio = np.abs(audio)
+    above = np.where(abs_audio > threshold)[0]
+    if len(above) == 0:
+        return audio  # all silence, return as-is
+    first_loud = above[0]
+    last_loud = above[-1]
+    # Keep a small margin on each side
+    lead_samples = int(lead_ms / 1000.0 * sr)
+    tail_samples = int(tail_ms / 1000.0 * sr)
+    start = max(first_loud - lead_samples, 0)
+    end = min(last_loud + tail_samples, len(audio))
+    return audio[start:end]
+
 
 def split_into_segments(text):
     """
@@ -128,17 +214,19 @@ def chunk_text(text, max_chars=250):
     return chunks
 
 
-def count_tts_chunks(text, max_chunk_chars=250):
+def count_tts_chunks(text):
     """Count the number of TTS chunks that generate() will produce.
 
     Accounts for [pause:N] tags — only text segments are counted.
+    Each line may produce multiple TTS calls if it contains
+    multiple sentences.
     """
-    segments = split_into_segments(text)
-    return sum(
-        len(chunk_text(s["value"], max_chars=max_chunk_chars))
-        for s in segments
-        if s["type"] == "text"
-    )
+    segments = _split_script_to_segments(text)
+    count = 0
+    for s in segments:
+        if s["type"] == "text":
+            count += len(split_into_sentences(s["value"]))
+    return count
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +354,7 @@ class TTSEngine:
         top_k=None,
         top_p=None,
         repetition_penalty=None,
+        seed=None,
     ):
         """
         Generate audio for a single text chunk.
@@ -277,12 +366,19 @@ class TTSEngine:
             top_k: Top-K sampling (lower = fewer candidates, tighter match).
             top_p: Nucleus sampling threshold (lower = narrower, tighter match).
             repetition_penalty: Token repetition penalty.
+            seed: Random seed for reproducible generation.
 
         Returns:
             1D numpy array of audio samples at 24kHz.
         """
         if not self.is_loaded:
             raise RuntimeError("Model not loaded. Call load_model() first.")
+
+        # Set seed for reproducible generation
+        if seed is not None:
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed(seed)
 
         kwargs = {
             "text": text,
@@ -306,6 +402,8 @@ class TTSEngine:
 
         # wav_tensor shape: (1, samples) — squeeze to 1D numpy
         audio = wav_tensor.squeeze(0).cpu().numpy()
+        # Trim trailing silence/artifacts
+        audio = trim_silence(audio, sr=SAMPLE_RATE)
         return audio
 
     def generate(
@@ -317,7 +415,7 @@ class TTSEngine:
         top_k=None,
         top_p=None,
         repetition_penalty=None,
-        max_chunk_chars=250,
+        max_chunk_chars=500,
         progress_callback=None,
     ):
         """
@@ -358,62 +456,80 @@ class TTSEngine:
             )
             output_path = os.path.join(config.AUDIO_OUTPUT_DIR, f"tts_{timestamp}.wav")
 
-        # Parse [pause:N] tags into text/pause segments
-        segments = split_into_segments(text)
+        # Split script into segments using line-based boundaries.
+        # Each line = one TTS call. [pause:N] tags become explicit silence.
+        segments = _split_script_to_segments(text)
         has_pauses = any(s["type"] == "pause" for s in segments)
         text_segments = [s for s in segments if s["type"] == "text"]
         total_text_chunks = sum(
-            len(chunk_text(s["value"], max_chars=max_chunk_chars))
-            for s in text_segments
+            len(split_into_sentences(s["value"])) for s in text_segments
         )
         if has_pauses:
             pause_total = sum(s["duration"] for s in segments if s["type"] == "pause")
             logger.info(
                 f"Text split into {len(segments)} segment(s) "
-                f"({len(text_segments)} speech, "
-                f"{len(segments) - len(text_segments)} pause = {pause_total:.1f}s silence), "
-                f"{total_text_chunks} TTS chunk(s)"
+                f"({total_text_chunks} speech, "
+                f"{len(segments) - total_text_chunks} pause = {pause_total:.1f}s silence)"
             )
         else:
-            logger.info(f"Text split into {total_text_chunks} chunk(s)")
+            logger.info(
+                f"Text: {total_text_chunks} line(s), no explicit pauses "
+                f"(200ms gap between lines)"
+            )
 
-        # Generate audio for each segment
+        # Generate audio — one TTS call per line.
+        # Lines are joined with a short controlled gap (SENTENCE_GAP_MS)
+        # instead of relying on Chatterbox's unpredictable inter-sentence pauses.
+        SENTENCE_GAP_MS = 200  # ms of silence between lines
+        SUB_SENTENCE_GAP_MS = 100  # ms of silence between sub-sentences within a line
+        sentence_gap = np.zeros(
+            int(SENTENCE_GAP_MS / 1000.0 * SAMPLE_RATE), dtype=np.float32
+        )
+        sub_sentence_gap = np.zeros(
+            int(SUB_SENTENCE_GAP_MS / 1000.0 * SAMPLE_RATE), dtype=np.float32
+        )
         output_parts = []
         chunk_counter = 0
-        first_speech = True
-        crossfade_samples = int(CROSSFADE_SECONDS * SAMPLE_RATE)
 
-        for seg in segments:
+        for seg_idx, seg in enumerate(segments):
             if seg["type"] == "pause":
                 silence = np.zeros(int(seg["duration"] * SAMPLE_RATE), dtype=np.float32)
                 output_parts.append(silence)
                 logger.info(f"  Inserted {seg['duration']:.1f}s pause")
             else:
-                # Generate TTS for this text segment
-                chunks = chunk_text(seg["value"], max_chars=max_chunk_chars)
-                speech_arrays = []
-                for chunk in chunks:
+                line_text = seg["value"]
+                # Split line into sub-sentences so Chatterbox gets
+                # short, clean chunks (avoids phantom pauses and
+                # truncation when a line has multiple sentences).
+                sub_sentences = split_into_sentences(line_text)
+                for sub_idx, sub_sent in enumerate(sub_sentences):
                     chunk_counter += 1
                     logger.info(
                         f"  Generating chunk {chunk_counter}/{total_text_chunks}: "
-                        f"{chunk[:60]}{'...' if len(chunk) > 60 else ''}"
+                        f"{sub_sent[:60]}{'...' if len(sub_sent) > 60 else ''}"
                     )
+                    chunk_seed = config.VIDEO_SEED + chunk_counter
                     audio = self.generate_chunk(
-                        text=chunk,
-                        voice_ref_path=wav_ref if first_speech else None,
+                        text=sub_sent,
+                        voice_ref_path=wav_ref,
                         temperature=temperature,
                         top_k=top_k,
                         top_p=top_p,
                         repetition_penalty=repetition_penalty,
+                        seed=chunk_seed,
                     )
-                    speech_arrays.append(audio)
-                    first_speech = False
-                    if progress_callback is not None:
-                        progress_callback()
-
-                # Crossfade-stitch chunks within this speech segment
-                stitched = crossfade_stitch(speech_arrays, crossfade_samples)
-                output_parts.append(stitched)
+                    output_parts.append(audio)
+                    # Short gap between sub-sentences within the same line
+                    if sub_idx < len(sub_sentences) - 1:
+                        output_parts.append(sub_sentence_gap)
+                # Insert controlled gap between lines
+                # (not after last segment, not before an explicit pause)
+                if seg_idx < len(segments) - 1:
+                    next_seg = segments[seg_idx + 1]
+                    if next_seg["type"] != "pause":
+                        output_parts.append(sentence_gap)
+                if progress_callback is not None:
+                    progress_callback()
 
         # Concatenate all parts (speech segments + silence)
         final_audio = (

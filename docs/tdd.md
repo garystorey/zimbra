@@ -136,24 +136,29 @@ gantt
 
 ```mermaid
 flowchart TD
-    A[Input: text + voice_ref] --> B[split_into_segments]
-    B --> C{Segment type?}
-    C -->|text| D[chunk_text at sentence boundaries]
-    C -->|pause| E[Generate silence array]
-    D --> F[generate_chunk per chunk]
-    F --> G[crossfade_stitch speech chunks]
-    G --> H[Concatenate all segments]
-    E --> H
-    H --> I[Pad: 0.25s front + 0.5s end]
-    I --> J[Save WAV at 24 kHz]
+    A[Input: text + voice_ref] --> B[normalize_text]
+    B --> B2["Strip quotes, smart quotes → ASCII"]
+    B2 --> C[_split_script_to_segments by lines]
+    C --> D{Segment type?}
+    D -->|text| E[split_into_sentences at .!? boundaries]
+    D -->|pause| F[Generate silence array]
+    E --> G[generate_chunk per sub-sentence]
+    G --> G2[trim_silence on each chunk]
+    G2 --> H[Join sub-sentences with 100ms gap]
+    H --> I[Join lines with 200ms gap]
+    F --> I
+    I --> J[Pad: 0.25s front + 0.5s end]
+    J --> K[Save WAV at 24 kHz]
 ```
 
 **Key Implementation Details:**
 
 - **Model**: `ChatterboxTurboTTS.from_pretrained(device="cuda")`
 - **Voice ref**: Must be >5 seconds. Converted to WAV if MP3.
-- **Chunking**: Split at `.!?` boundaries, max 250 chars/chunk
-- **Crossfade**: 50ms cosine window between chunks
+- **Text normalization**: Smart quotes → ASCII `"` → stripped. Em/en dashes → `-`. Prevents phantom pauses and truncation in Chatterbox.
+- **Two-level splitting**: Lines → sub-sentences. Each sub-sentence is a separate TTS call. 100ms gap within lines, 200ms between lines.
+- **Silence trimming**: Leading (50ms margin) and trailing (200ms margin) trimmed at -40dB threshold per chunk.
+- **Sampling**: `temperature=0.6`, `top_k=40`, `top_p=0.8`, `repetition_penalty=1.2`. Temperature <0.5 causes looping.
 - **Output**: 24 kHz mono WAV
 
 ### 3.2 Video Engine (`video_engine.py`)

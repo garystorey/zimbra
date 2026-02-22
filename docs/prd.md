@@ -47,7 +47,10 @@ Content creators, developers, and hobbyists who need talking-head video generati
 
 - Clone voice from a reference audio clip (>5 seconds)
 - Support `[pause:N]` tags for inserting silence of N seconds
-- Chunk long text at sentence boundaries with 50ms cosine crossfade stitching
+- Two-level text splitting: lines → sub-sentences (at `.!?` boundaries). Each sub-sentence is a separate TTS call to prevent phantom pauses and truncation.
+- Quote stripping: all `"` characters removed before TTS (both ASCII and smart quotes). Quotes are never spoken and cause Chatterbox to malfunction.
+- Controlled gaps: 200ms between lines, 100ms between sub-sentences within a line
+- Silence trimming on each chunk (leading + trailing) to prevent excess padding
 - Output 24 kHz WAV audio
 - Support `--audio-only` mode (skip video generation)
 

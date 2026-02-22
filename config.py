@@ -76,8 +76,8 @@ DEFAULT_FPS = 24
 #   top_k:       lower = fewer candidate tokens (50 vs Chatterbox default 1000)
 #   top_p:       lower = narrower nucleus sampling (0.85 vs Chatterbox default 0.95)
 TTS_TEMPERATURE = 0.6
-TTS_TOP_K = 50
-TTS_TOP_P = 0.85
+TTS_TOP_K = 40
+TTS_TOP_P = 0.8
 TTS_REPETITION_PENALTY = 1.2
 
 # Run timestamp — set once at startup by setup_logging(), shared across all
