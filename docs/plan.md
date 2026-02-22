@@ -252,7 +252,46 @@ TTS (Chatterbox Turbo): ~4.16 GB (fully unloaded before video)
 
 Patches are maintained in the [garystorey/InfiniteTalk](https://github.com/garystorey/InfiniteTalk) fork (forked from MeiGen-AI/InfiniteTalk). `install.py` clones this fork into `vendor/infinitetalk/`. All patches are version-controlled in the fork — no post-clone patching needed.
 
-Future workflow: develop locally in `vendor/infinitetalk/`, then PR to the fork.
+### 9.0 How to PR Changes to the Fork
+
+When you modify files inside `vendor/infinitetalk/`, use this workflow to push them to the fork permanently:
+
+```powershell
+# 1. Clone the fork to a temp working directory (next to zimbra)
+git clone https://github.com/garystorey/InfiniteTalk.git C:\Users\GaryS\Desktop\InfiniteTalk-fork
+
+# 2. Create a feature branch
+cd C:\Users\GaryS\Desktop\InfiniteTalk-fork
+git checkout -b my-patch-name
+
+# 3. Copy changed files from vendor into the clone
+#    (repeat for each modified file)
+copy C:\Users\GaryS\Desktop\zimbra\vendor\infinitetalk\wan\multitalk.py .\wan\multitalk.py
+
+# 4. Review, commit, push
+git diff                                          # verify changes look right
+git add -A
+git commit -m "Description of what changed and why"
+git push origin my-patch-name
+
+# 5. Create the PR
+gh pr create --repo garystorey/InfiniteTalk --base main --head my-patch-name --title "Short title" --body "Detailed description"
+
+# 6. Review & merge the PR on GitHub
+#    https://github.com/garystorey/InfiniteTalk/pulls
+
+# 7. Cleanup — delete the temp clone (safe after merge)
+Remove-Item -Recurse -Force C:\Users\GaryS\Desktop\InfiniteTalk-fork
+```
+
+After merging, any fresh `install.py` run will clone the updated fork with your changes included.
+
+**Tips:**
+
+- Use `git diff --stat` to see which files differ before copying
+- One PR per logical change (don't bundle unrelated fixes)
+- The temp clone can be anywhere — it's disposable after the PR is merged
+- `gh` CLI must be installed and authenticated (`gh auth status` to check)
 
 Patches that are **essential** for correct operation on 16 GB VRAM:
 
