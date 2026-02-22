@@ -236,6 +236,115 @@ def get_image_dimensions(image_path):
 
 
 # ---------------------------------------------------------------------------
+# Contact sheet generation (for quality review)
+# ---------------------------------------------------------------------------
+
+
+def generate_contact_sheet(video_path, output_path=None, cols=4, frame_interval=None):
+    """Generate a contact sheet (grid of frames) from a video for quality review.
+
+    Extracts frames at regular intervals and tiles them into a single PNG image.
+    Useful for spotting progressive degradation, face distortion, or color drift
+    across chunks without watching the full video.
+
+    Args:
+        video_path: Path to the input MP4 video.
+        output_path: Where to save the PNG. Defaults to video_path with
+            '_contact_sheet.png' suffix.
+        cols: Number of columns in the grid (default 4).
+        frame_interval: Extract every Nth frame. Defaults to ~1 frame/sec at 25fps.
+
+    Returns:
+        Path to the generated contact sheet PNG, or None on failure.
+    """
+    import logging
+
+    logger = logging.getLogger("utils")
+
+    ffmpeg = config.FFMPEG_PATH
+    if ffmpeg is None:
+        logger.warning("FFmpeg not found — skipping contact sheet generation")
+        return None
+
+    if not os.path.isfile(video_path):
+        logger.warning(f"Video file not found for contact sheet: {video_path}")
+        return None
+
+    if output_path is None:
+        base = os.path.splitext(video_path)[0]
+        output_path = base + "_contact_sheet.png"
+
+    if frame_interval is None:
+        frame_interval = config.VIDEO_FPS  # ~1 frame per second
+
+    # Probe video to get total frame count so we can size the tile grid exactly
+    probe_cmd = [
+        ffmpeg,
+        "-i",
+        video_path,
+        "-map",
+        "0:v:0",
+        "-c",
+        "copy",
+        "-f",
+        "null",
+        "-",
+    ]
+    try:
+        probe_result = subprocess.run(
+            probe_cmd, capture_output=True, text=True, timeout=15
+        )
+        # Parse "frame= NNN" from stderr
+        import re
+
+        match = re.search(r"frame=\s*(\d+)", probe_result.stderr)
+        total_frames = int(match.group(1)) if match else 250  # fallback ~10s
+    except Exception:
+        total_frames = 250
+
+    num_extracted = max(1, total_frames // frame_interval)
+    rows = max(1, (num_extracted + cols - 1) // cols)  # ceil division
+
+    # Use FFmpeg to select every Nth frame, scale to thumbnail width, and tile
+    thumb_width = 320
+    vf = (
+        f"select=not(mod(n\\,{frame_interval})),"
+        f"scale={thumb_width}:-1,"
+        f"tile={cols}x{rows}"
+    )
+
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-i",
+        video_path,
+        "-vf",
+        vf,
+        "-vsync",
+        "vfr",
+        "-frames:v",
+        "1",
+        "-q:v",
+        "2",
+        output_path,
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            logger.warning(f"FFmpeg contact sheet failed: {result.stderr[:200]}")
+            return None
+        if os.path.isfile(output_path):
+            size_kb = os.path.getsize(output_path) / 1024
+            logger.info(f"Contact sheet saved: {output_path} ({size_kb:.0f} KB)")
+            return output_path
+        return None
+    except Exception as e:
+        logger.warning(f"Contact sheet generation failed: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
 # GPU thermal management
 # ---------------------------------------------------------------------------
 

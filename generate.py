@@ -257,6 +257,7 @@ def main():
     if args.video_only:
         import utils
         import time as _time
+        import model_manager
         from pipeline import _make_progress, _fmt, _estimate_video_eta
         from video_engine import VideoEngine
 
@@ -274,6 +275,9 @@ def main():
         console.print()
         console.print("[bold]Video-only mode[/bold]")
         console.print()
+
+        # Pre-flight: download any missing model files
+        model_manager.preflight_downloads(console=console)
 
         engine = VideoEngine()
         try:
@@ -335,9 +339,12 @@ def main():
                     f"actual {_vo_elapsed:.1f}s, "
                     f"diff {_vo_elapsed - eta_secs:+.1f}s"
                 )
+            contact_sheet = utils.generate_contact_sheet(video_path)
             console.print()
             console.print(f"[bold green]Done![/bold green]  {_fmt(_vo_elapsed)}")
             console.print(f"  Video: {video_path}")
+            if contact_sheet:
+                console.print(f"  Contact sheet: {contact_sheet}")
             console.print()
             return 0
         except Exception as e:
@@ -351,18 +358,22 @@ def main():
     if args.audio_only:
         import utils
         import time as _time
+        import model_manager
         from pipeline import _make_progress, _fmt
-        from tts_engine import TTSEngine, chunk_text
+        from tts_engine import TTSEngine, count_tts_chunks
+
+        # Pre-flight: download any missing model files
+        model_manager.preflight_downloads(console=console)
 
         script_text = utils.validate_script()
         voice_ref = config.DEFAULT_VOICE_REF
-        chunks = chunk_text(script_text)
-        est_secs = 30 + len(chunks) * 8
+        num_chunks = count_tts_chunks(script_text)
+        est_secs = 30 + num_chunks * 8
 
         console.print()
         console.print("[bold]Audio-only mode[/bold]")
         console.print(
-            f"[dim]Estimated time: ~{_fmt(est_secs)} ({len(chunks)} chunk{'s' if len(chunks) != 1 else ''})[/dim]"
+            f"[dim]Estimated time: ~{_fmt(est_secs)} ({num_chunks} chunk{'s' if num_chunks != 1 else ''})[/dim]"
         )
         console.print()
 
@@ -382,7 +393,7 @@ def main():
                     engine.load_model()
                     progress.update(load_task, total=1, completed=1)
 
-                    gen_task = progress.add_task("Generating audio", total=len(chunks))
+                    gen_task = progress.add_task("Generating audio", total=num_chunks)
 
                     audio_path = engine.generate(
                         text=script_text,

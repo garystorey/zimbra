@@ -14,6 +14,7 @@ import logging
 
 import torch
 from rich.console import Console
+from tts_engine import chunk_text
 from rich.progress import (
     Progress,
     SpinnerColumn,
@@ -26,7 +27,8 @@ from rich.progress import (
 
 import config
 import utils
-from tts_engine import TTSEngine, chunk_text
+import model_manager
+from tts_engine import TTSEngine, count_tts_chunks
 from video_engine import VideoEngine
 
 logger = logging.getLogger(__name__)
@@ -56,6 +58,8 @@ def _make_progress(console):
         TimeElapsedColumn(),
         console=console,
         transient=False,
+        redirect_stdout=False,
+        redirect_stderr=False,
     )
 
 
@@ -168,6 +172,14 @@ class Pipeline:
         console.print()
 
         # -----------------------------------------------------------------
+        # Pre-flight: download any missing model files
+        # -----------------------------------------------------------------
+        if not verbose:
+            model_manager.preflight_downloads(console=console)
+        else:
+            model_manager.preflight_downloads()
+
+        # -----------------------------------------------------------------
         # Validate inputs
         # -----------------------------------------------------------------
         script_text = utils.validate_script()
@@ -212,8 +224,7 @@ class Pipeline:
 
         try:
             self.tts_engine = TTSEngine()
-            chunks = chunk_text(script_text)
-            num_chunks = len(chunks)
+            num_chunks = count_tts_chunks(script_text)
 
             if verbose:
                 self.tts_engine.load_model()
@@ -300,9 +311,9 @@ class Pipeline:
                     # Refined ETA now that we know actual audio duration
                     refined_video_eta = _estimate_video_eta(audio_duration)
                     est_video_secs = refined_video_eta  # update for final comparison
-                    console.print(
-                        f"[dim]Video ETA (refined): ~{_fmt(refined_video_eta)} "
-                        f"({total_steps} steps × ~{int(refined_video_eta / max(total_steps, 1))}s/step)[/dim]"
+                    logger.info(
+                        f"Video ETA (refined): ~{_fmt(refined_video_eta)} "
+                        f"({total_steps} steps × ~{int(refined_video_eta / max(total_steps, 1))}s/step)"
                     )
 
                     gen_task = progress.add_task("Generating video", total=total_steps)
@@ -339,6 +350,11 @@ class Pipeline:
         self.video_engine = None
 
         # -----------------------------------------------------------------
+        # Contact sheet (for quality review)
+        # -----------------------------------------------------------------
+        contact_sheet = utils.generate_contact_sheet(video_path)
+
+        # -----------------------------------------------------------------
         # Summary
         # -----------------------------------------------------------------
         timings["total"] = time.time() - pipeline_start
@@ -352,11 +368,14 @@ class Pipeline:
         console.print(f"[bold green]Done![/bold green]  {_fmt(timings['total'])}")
         console.print(f"  Audio: {audio_path}")
         console.print(f"  Video: {video_path}")
+        if contact_sheet:
+            console.print(f"  Contact sheet: {contact_sheet}")
         console.print()
 
         return {
             "script_text": script_text,
             "audio_path": audio_path,
             "video_path": video_path,
+            "contact_sheet": contact_sheet,
             "timings": timings,
         }

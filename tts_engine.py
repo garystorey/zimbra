@@ -128,6 +128,19 @@ def chunk_text(text, max_chars=250):
     return chunks
 
 
+def count_tts_chunks(text, max_chunk_chars=250):
+    """Count the number of TTS chunks that generate() will produce.
+
+    Accounts for [pause:N] tags — only text segments are counted.
+    """
+    segments = split_into_segments(text)
+    return sum(
+        len(chunk_text(s["value"], max_chars=max_chunk_chars))
+        for s in segments
+        if s["type"] == "text"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Audio crossfade stitching
 # ---------------------------------------------------------------------------
@@ -249,9 +262,10 @@ class TTSEngine:
         self,
         text,
         voice_ref_path=None,
-        exaggeration=None,
-        cfg_weight=None,
-        temperature=0.8,
+        temperature=None,
+        top_k=None,
+        top_p=None,
+        repetition_penalty=None,
     ):
         """
         Generate audio for a single text chunk.
@@ -259,9 +273,10 @@ class TTSEngine:
         Args:
             text: Text to synthesize.
             voice_ref_path: Path to voice reference WAV (>5s). None uses built-in voice.
-            exaggeration: Emotion exaggeration (logged as warning in Turbo, but passed through).
-            cfg_weight: CFG weight (logged as warning in Turbo, but passed through).
-            temperature: Sampling temperature.
+            temperature: Sampling temperature (lower = tighter voice match).
+            top_k: Top-K sampling (lower = fewer candidates, tighter match).
+            top_p: Nucleus sampling threshold (lower = narrower, tighter match).
+            repetition_penalty: Token repetition penalty.
 
         Returns:
             1D numpy array of audio samples at 24kHz.
@@ -271,17 +286,20 @@ class TTSEngine:
 
         kwargs = {
             "text": text,
-            "temperature": temperature,
+            "temperature": (
+                temperature if temperature is not None else config.TTS_TEMPERATURE
+            ),
+            "top_k": top_k if top_k is not None else config.TTS_TOP_K,
+            "top_p": top_p if top_p is not None else config.TTS_TOP_P,
+            "repetition_penalty": (
+                repetition_penalty
+                if repetition_penalty is not None
+                else config.TTS_REPETITION_PENALTY
+            ),
         }
 
         if voice_ref_path is not None:
             kwargs["audio_prompt_path"] = voice_ref_path
-
-        if exaggeration is not None:
-            kwargs["exaggeration"] = exaggeration
-
-        if cfg_weight is not None:
-            kwargs["cfg_weight"] = cfg_weight
 
         with torch.inference_mode():
             wav_tensor = self.model.generate(**kwargs)
@@ -295,9 +313,10 @@ class TTSEngine:
         text,
         voice_ref_path=None,
         output_path=None,
-        exaggeration=None,
-        cfg_weight=None,
-        temperature=0.8,
+        temperature=None,
+        top_k=None,
+        top_p=None,
+        repetition_penalty=None,
         max_chunk_chars=250,
         progress_callback=None,
     ):
@@ -312,9 +331,10 @@ class TTSEngine:
             voice_ref_path: Path to voice reference audio (>5s WAV/MP3).
                             None uses the built-in default voice.
             output_path: Where to save the output WAV. Auto-generated if None.
-            exaggeration: Emotion exaggeration level.
-            cfg_weight: Classifier-free guidance weight.
-            temperature: Sampling temperature.
+            temperature: Sampling temperature (lower = tighter voice match).
+            top_k: Top-K sampling (lower = fewer candidates, tighter match).
+            top_p: Nucleus sampling threshold (lower = narrower, tighter match).
+            repetition_penalty: Token repetition penalty.
             max_chunk_chars: Maximum characters per chunk for long text.
 
         Returns:
@@ -381,9 +401,10 @@ class TTSEngine:
                     audio = self.generate_chunk(
                         text=chunk,
                         voice_ref_path=wav_ref if first_speech else None,
-                        exaggeration=exaggeration,
-                        cfg_weight=cfg_weight,
                         temperature=temperature,
+                        top_k=top_k,
+                        top_p=top_p,
+                        repetition_penalty=repetition_penalty,
                     )
                     speech_arrays.append(audio)
                     first_speech = False

@@ -65,11 +65,20 @@ DEFAULT_ANIMATION_FILE = os.path.join(ANIMATION_DIR, "default.txt")
 # CLI defaults
 # ---------------------------------------------------------------------------
 
-DEFAULT_EXAGGERATION = 0.5
-DEFAULT_CFG_WEIGHT = 0.5
 DEFAULT_ACCELERATED = True
 DEFAULT_AUDIO_FORMAT = "wav"
 DEFAULT_FPS = 24
+
+# TTS sampling parameters — tuned for tight voice clone fidelity.
+# Chatterbox Turbo ignores exaggeration and cfg_weight (logged as warning).
+# These three knobs control how closely the output matches the reference voice:
+#   temperature: lower = less random, tighter match (0.6 vs default 0.8)
+#   top_k:       lower = fewer candidate tokens (50 vs Chatterbox default 1000)
+#   top_p:       lower = narrower nucleus sampling (0.85 vs Chatterbox default 0.95)
+TTS_TEMPERATURE = 0.6
+TTS_TOP_K = 50
+TTS_TOP_P = 0.85
+TTS_REPETITION_PENALTY = 1.2
 
 # Run timestamp — set once at startup by setup_logging(), shared across all
 # output filenames (log, audio, video) so they can be correlated easily.
@@ -106,29 +115,28 @@ VIDEO_LORA_SOLVER = "dpmpp_sde"  # DPM++ SDE 1st-order. SDE noise prevents error
 # Time estimation (seconds per denoising step per SINGLE PASS, for ETA display)
 # The ETA code in video_engine.py multiplies this by passes_per_step (1, 2, or 3).
 # Calibrate this to your GPU. Measured on RTX 4090 Laptop 16GB.
-VIDEO_SECS_PER_STEP = 17  # ~16.8s/pass measured (GGUF on RTX 4090 Laptop 16GB)
+VIDEO_SECS_PER_STEP = 34  # ~34s/pass at 1-pass (audio_cfg=1.0), ~36s/pass at 2-pass (audio_cfg=2.0). I2V rank-64 LoRA, frame_num=81.
 
 # GGUF model settings.
-# GGUF model is ~12.8GB.  With block swap most blocks stay on GPU;
-# CLIP/VAE fit alongside without offloading DiT blocks.
-# frame_num=41 is proven safe for VAE 3D-conv on 16GB.  81 requires VAE
-# temporal tiling (future optimisation).
-VIDEO_GGUF_FRAME_NUM = 41  # 4n+1, safe for VAE 3D-conv on 16GB
-VIDEO_GGUF_MOTION_FRAME = 13  # Overlap frames between chunks
+# GGUF model is ~12.8GB.  With block swap most blocks stay on GPU.
+# frame_num=81 matches ComfyUI (fewer chunks = better quality + faster).
+# DiT blocks are offloaded before VAE encode/decode to give Conv3D headroom.
+VIDEO_GGUF_FRAME_NUM = (
+    81  # 4n+1, matches ComfyUI frame_window=81. Fewer chunks = better quality.
+)
+VIDEO_GGUF_MOTION_FRAME = 9  # Reduced from 25. motion_frame=25 froze 43% of frames (audio-unresponsive) and created too many chunks for long videos. 9 = 0.36s overlap, sufficient with direct latent passthrough.
 VIDEO_GGUF_LORA_SAMPLE_STEPS = (
     4  # LightX2V designed for 4 steps; saves 33% denoising vs 6
 )
-VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE = 2.0  # 2.0 = audio CFG (2 passes/step). 1.0 skips CFG for speed but causes progressive blur/warp.
-VIDEO_GGUF_SECS_PER_STEP = 17  # Measured ~16.8s/pass avg on RTX 4090 Laptop 16GB (15.8 chunk 0, ~17.1 chunks 1-4)
-VIDEO_GGUF_ACTIVATION_RESERVE = (
-    7.0  # GiB — dequant temporaries need headroom to prevent WDDM spill
-)
+VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE = 1.0  # 1.0 = 1 pass/step (skip CFG). Works with I2V rank-64 LoRA. Previous failure (Phase 15b) was with wrong T2V rank-32 LoRA. CLI --audio-cfg 2.0 for stronger lip sync at 2x render time.
+VIDEO_GGUF_SECS_PER_STEP = 34  # Measured ~33.7s/pass at 1-pass, ~35.8s at 2-pass. I2V rank-64 LoRA, 22+18 swapped (run_20260221_223335)
+VIDEO_GGUF_ACTIVATION_RESERVE = 8.5  # GiB — 81-frame activations need more headroom than 41-frame. Auto-tunes to ~22 persistent + ~18 swapped.
 
 # Per-chunk overhead (seconds) — VAE decode + block offload/restore round-trip.
 # These are NOT included in SECS_PER_STEP; added separately in ETA calculations.
 # Conservative estimates — calibrate from "ETA accuracy" log lines after real runs.
-VIDEO_VAE_DECODE_SECS = 15  # Per-chunk overhead: VAE decode (~7s) + inter-chunk gap (~8s: thermal check, block restore, motion latent)
-VIDEO_FIRST_CHUNK_EXTRA_SECS = 23  # CLIP encode (~3s) + VAE encode (~20s) — first chunk only, measured from run_20260220_160641
+VIDEO_VAE_DECODE_SECS = 28  # Per-chunk transition: VAE decode (~13s) + block offload/restore (~10s) + thermal + motion latent. Measured from run_20260221_190632.
+VIDEO_FIRST_CHUNK_EXTRA_SECS = 24  # CLIP (~10s) + VAE encode (~8s) + setup (~6s). No block offload/restore during encode with I2V LoRA. Measured from run_20260221_190632.
 
 # Block swap settings (for 16GB GPUs)
 # None = auto-tune based on available VRAM. GGUF blocks are ~320MB each;
@@ -167,14 +175,15 @@ GGUF_ADAPTER_FILENAME = "Wan2_1-InfiniteTalk_Single_Q8.gguf"
 GGUF_BASE_PATH = os.path.join(GGUF_DIR, GGUF_BASE_FILENAME)
 GGUF_ADAPTER_PATH = os.path.join(GGUF_DIR, GGUF_ADAPTER_FILENAME)
 
-# LightX2V accelerator LoRA
+# LightX2V accelerator LoRA — I2V rank-64 (matches ComfyUI workflow)
+# Previous rank-32 T2V LoRA was wrong model type (text-to-video, not image-to-video)
 LORA_DIR = os.path.join(INFINITETALK_MODELS_DIR, "loras")
 LIGHTX2V_LORA_FILENAME = (
-    "Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors"
+    "lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors"
 )
-LIGHTX2V_LORA_PATH = os.path.join(LORA_DIR, LIGHTX2V_LORA_FILENAME)
 LIGHTX2V_LORA_HF_REPO = "Kijai/WanVideo_comfy"
-LIGHTX2V_LORA_HF_FILE = LIGHTX2V_LORA_FILENAME
+LIGHTX2V_LORA_HF_FILE = "Lightx2v/" + LIGHTX2V_LORA_FILENAME
+LIGHTX2V_LORA_PATH = os.path.join(LORA_DIR, "Lightx2v", LIGHTX2V_LORA_FILENAME)
 
 
 # ---------------------------------------------------------------------------

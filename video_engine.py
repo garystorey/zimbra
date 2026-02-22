@@ -299,11 +299,11 @@ class VideoEngine:
             )
             # Tell vendor code we handle VRAM ourselves — skip its per-layer wrapping
             self.pipe.vram_management = False
-            # Skip offload_blocks/restore_blocks during CLIP/VAE encode.
-            # GGUF model (~10GB) is small enough for CLIP/VAE to fit alongside
-            # on 16GB without moving DiT blocks off GPU.  Eliminates ~20GB
-            # round-trip PCIe transfer that caused hangs.
-            self.pipe._skip_block_offload = True
+            # Note: with frame_num=81, DiT blocks ARE offloaded before VAE
+            # encode (first chunk) to give Conv3D headroom. The vendor code
+            # in multitalk.py handles this unconditionally when block_swap
+            # is active. _skip_block_offload is no longer checked.
+            self.pipe._skip_block_offload = False
         else:
             # All blocks fit on GPU — move entire model there
             self.pipe.model.to(self.device)
@@ -626,7 +626,7 @@ class VideoEngine:
             seed=seed,
             offload_model=True,
             max_frames_num=effective_max,
-            color_correction_strength=1.0,
+            color_correction_strength=0.3,  # Mild anchoring. 1.0 overcorrects in later chunks, flattening contrast and reducing lip movement visibility.
             extra_args=extra_args,
             pre_encoded_text=self._cached_text_embeddings,
             solver=solver,

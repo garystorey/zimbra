@@ -338,10 +338,10 @@ def ensure_gguf_models():
 
 def ensure_lora_models():
     """
-    Download the LightX2V accelerator LoRA if not already present.
+    Download the LightX2V I2V accelerator LoRA if not already present.
 
-    Source: Kijai/WanVideo_comfy on HuggingFace (~200 MB)
-    This LoRA enables 4-step inference (down from 20) with no CFG overhead.
+    Source: Kijai/WanVideo_comfy on HuggingFace (~738 MB)
+    I2V rank-64 variant — matches ComfyUI workflow. Enables 4-step inference.
     """
     lora_path = config.LIGHTX2V_LORA_PATH
     if os.path.isfile(lora_path):
@@ -350,7 +350,7 @@ def ensure_lora_models():
         return lora_path
 
     _get_console().print(
-        "  Downloading: [cyan]LightX2V accelerator LoRA (~200 MB)[/cyan]"
+        "  Downloading: [cyan]LightX2V I2V LoRA rank-64 (~738 MB)[/cyan]"
     )
     os.makedirs(config.LORA_DIR, exist_ok=True)
 
@@ -419,7 +419,218 @@ def ensure_chatterbox_models():
 
 
 # ---------------------------------------------------------------------------
-# Download all models
+# Pre-flight download check
+# ---------------------------------------------------------------------------
+
+# All required model files with human-readable names and approximate sizes (bytes).
+# This list is the single source of truth for what must be present before pipeline runs.
+_REQUIRED_FILES = [
+    # (local_path, description, approx_size_bytes)
+    (
+        lambda: os.path.join(config.WAN_CKPT_DIR, "config.json"),
+        "Wan2.1 config.json",
+        250,
+    ),
+    (
+        lambda: os.path.join(config.WAN_CKPT_DIR, "Wan2.1_VAE.pth"),
+        "Wan2.1 VAE",
+        508_000_000,
+    ),
+    (
+        lambda: os.path.join(
+            config.WAN_CKPT_DIR,
+            "models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth",
+        ),
+        "Wan2.1 CLIP",
+        4_770_000_000,
+    ),
+    (lambda: os.path.join(config.WAV2VEC_DIR, "config.json"), "wav2vec2 config", 2_000),
+    (
+        lambda: os.path.join(config.WAV2VEC_DIR, "preprocessor_config.json"),
+        "wav2vec2 preprocessor",
+        300,
+    ),
+    (
+        lambda: os.path.join(config.WAV2VEC_DIR, "model.safetensors"),
+        "wav2vec2 model",
+        360_000_000,
+    ),
+    (lambda: config.GGUF_BASE_PATH, "GGUF base Q4_0", 10_200_000_000),
+    (lambda: config.GGUF_ADAPTER_PATH, "GGUF adapter Q8", 2_650_000_000),
+    (lambda: config.LIGHTX2V_LORA_PATH, "LightX2V I2V LoRA rank-64", 738_000_000),
+]
+
+
+def _check_missing_files():
+    """Return list of (path, description, size) for files that need downloading."""
+    missing = []
+    for path_fn, desc, size in _REQUIRED_FILES:
+        path = path_fn()
+        if not os.path.isfile(path):
+            missing.append((path, desc, size))
+    return missing
+
+
+def preflight_downloads(console=None):
+    """Check all required model files and download any that are missing.
+
+    Shows a unified progress bar with total file count and size.
+    Must be called BEFORE the pipeline starts so that load_model()
+    never triggers downloads that corrupt the pipeline progress bars.
+
+    Args:
+        console: Rich Console instance for output. Uses default if None.
+
+    Returns:
+        True if any files were downloaded, False if all were already present.
+    """
+    config.ensure_directories()
+    missing = _check_missing_files()
+
+    if not missing:
+        return False
+
+    con = console or _get_console()
+    total_size = sum(s for _, _, s in missing)
+    total_size_gb = total_size / (1024**3)
+    con.print()
+    con.print(
+        f"[bold]Downloading {len(missing)} model file{'s' if len(missing) != 1 else ''} "
+        f"({total_size_gb:.1f} GB total)[/bold]"
+    )
+    con.print()
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(bar_width=40),
+        TextColumn("{task.completed}/{task.total} files"),
+        TextColumn("[dim]{task.fields[current]}[/dim]"),
+        TimeElapsedColumn(),
+        console=con,
+        transient=False,
+        redirect_stdout=False,
+        redirect_stderr=False,
+    ) as progress:
+        dl_task = progress.add_task(
+            "Downloading models",
+            total=len(missing),
+            current="",
+        )
+
+        for _i, (path, desc, _size) in enumerate(missing):
+            progress.update(dl_task, current=desc)
+            _download_one_model(path, desc)
+            progress.advance(dl_task)
+
+        progress.update(dl_task, current="done")
+
+    con.print("[bold green]All model files ready.[/bold green]")
+    con.print()
+    return True
+
+
+def _download_one_model(path, desc):
+    """Download a single model file identified by its expected local path."""
+    import logging
+
+    _logger = logging.getLogger(__name__)
+
+    # Wan2.1 files (VAE, CLIP, config, tokenizers)
+    wan_dir = config.WAN_CKPT_DIR
+    if path.startswith(wan_dir):
+        _logger.info(f"  Downloading {desc} from {config.WAN_HF_REPO}")
+        _hf_snapshot_download(
+            repo_id=config.WAN_HF_REPO,
+            local_dir=wan_dir,
+            desc=f"Wan2.1-I2V-14B base (VAE + CLIP + tokenizers)",
+            allow_patterns=[
+                "config.json",
+                "Wan2.1_VAE.pth",
+                "models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth",
+                "xlm-roberta-large/**",
+                "google/**",
+            ],
+        )
+        return
+
+    # wav2vec2 files
+    wav2vec_dir = config.WAV2VEC_DIR
+    if path.startswith(wav2vec_dir):
+        basename = os.path.basename(path)
+        if basename == "model.safetensors":
+            _logger.info(
+                f"  Downloading {desc} from {config.WAV2VEC_HF_REPO} (PR branch)"
+            )
+            from huggingface_hub import hf_hub_download
+
+            hf_hub_download(
+                repo_id=config.WAV2VEC_HF_REPO,
+                filename="model.safetensors",
+                revision="refs/pr/1",
+                local_dir=wav2vec_dir,
+            )
+        else:
+            _logger.info(f"  Downloading {desc} from {config.WAV2VEC_HF_REPO}")
+            _hf_snapshot_download(
+                repo_id=config.WAV2VEC_HF_REPO,
+                local_dir=wav2vec_dir,
+                desc="chinese-wav2vec2-base",
+                ignore_patterns=["*.md", ".gitattributes"],
+            )
+        return
+
+    # GGUF base
+    if path == config.GGUF_BASE_PATH:
+        _logger.info(f"  Downloading {desc} from {config.GGUF_BASE_HF_REPO}")
+        from huggingface_hub import hf_hub_download
+
+        hf_hub_download(
+            repo_id=config.GGUF_BASE_HF_REPO,
+            filename=config.GGUF_BASE_FILENAME,
+            local_dir=config.GGUF_DIR,
+        )
+        return
+
+    # GGUF adapter
+    if path == config.GGUF_ADAPTER_PATH:
+        _logger.info(f"  Downloading {desc} from {config.GGUF_ADAPTER_HF_REPO}")
+        from huggingface_hub import hf_hub_download
+
+        hf_hub_download(
+            repo_id=config.GGUF_ADAPTER_HF_REPO,
+            filename=f"InfiniteTalk/{config.GGUF_ADAPTER_FILENAME}",
+            local_dir=config.GGUF_DIR,
+        )
+        # Move from subdir if needed
+        downloaded = os.path.join(
+            config.GGUF_DIR, "InfiniteTalk", config.GGUF_ADAPTER_FILENAME
+        )
+        if os.path.isfile(downloaded) and not os.path.isfile(path):
+            shutil.move(downloaded, path)
+            inf_dir = os.path.join(config.GGUF_DIR, "InfiniteTalk")
+            if os.path.isdir(inf_dir) and not os.listdir(inf_dir):
+                os.rmdir(inf_dir)
+        return
+
+    # LoRA
+    if path == config.LIGHTX2V_LORA_PATH:
+        _logger.info(f"  Downloading {desc} from {config.LIGHTX2V_LORA_HF_REPO}")
+        os.makedirs(config.LORA_DIR, exist_ok=True)
+        from huggingface_hub import hf_hub_download
+
+        hf_hub_download(
+            repo_id=config.LIGHTX2V_LORA_HF_REPO,
+            filename=config.LIGHTX2V_LORA_HF_FILE,
+            local_dir=config.LORA_DIR,
+        )
+        return
+
+    _logger.warning(f"  Unknown model file, cannot download: {path}")
+
+
+# ---------------------------------------------------------------------------
+# Download all models (legacy — prefer preflight_downloads)
 # ---------------------------------------------------------------------------
 
 
@@ -428,6 +639,7 @@ def ensure_all_models():
     config.ensure_directories()
     ensure_infinitetalk_models()
     ensure_gguf_models()
+    ensure_lora_models()
     ensure_chatterbox_models()
     if _is_verbose():
         _get_console().print("\n[bold green]All models ready.[/bold green]")
