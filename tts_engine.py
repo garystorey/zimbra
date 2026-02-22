@@ -32,8 +32,8 @@ CROSSFADE_SECONDS = 0.05  # 50ms overlap
 # Pause tag parsing
 # ---------------------------------------------------------------------------
 
-# Matches [pause:1.5], [pause:2], [pause:0.5], etc.
-_PAUSE_RE = re.compile(r"\[pause:(\d+(?:\.\d+)?)\]", re.IGNORECASE)
+# Matches [s:1.5], [s:2], [s:0.5], etc.
+_PAUSE_RE = re.compile(r"\[s:(\d+(?:\.\d+)?)\]", re.IGNORECASE)
 
 # Unicode → ASCII replacements that confuse TTS tokenizers
 _UNICODE_REPLACEMENTS = {
@@ -54,9 +54,6 @@ def normalize_text(text):
     """Replace Unicode smart quotes/dashes with ASCII equivalents for TTS."""
     for unicode_char, ascii_char in _UNICODE_REPLACEMENTS.items():
         text = text.replace(unicode_char, ascii_char)
-    # Strip double quotation marks — never spoken aloud, confuse TTS into
-    # phantom pauses and truncation (e.g. 'I said "I'm sorry.' → long pause)
-    text = text.replace('"', "")
     # Collapse multiple spaces (but preserve newlines for line-based splitting)
     text = re.sub(r" {2,}", " ", text)
     return text.strip()
@@ -65,8 +62,8 @@ def normalize_text(text):
 def _split_script_to_segments(text):
     """Split script text into TTS segments preserving line-based structure.
 
-    Each line in the script is one natural sentence/thought. [pause:N] tags
-    insert explicit silence. Lines without pause tags get a controlled
+    Each line in the script is one natural sentence/thought. [s:N] tags
+    insert explicit silence. Lines without silence tags get a controlled
     inter-sentence gap instead.
 
     Returns list of dicts:
@@ -79,7 +76,7 @@ def _split_script_to_segments(text):
         line = line.strip()
         if not line:
             continue
-        # Extract [pause:N] tag if present
+        # Extract [s:N] tag if present
         pause_match = _PAUSE_RE.search(line)
         # Get the text portion (everything except the pause tag)
         if pause_match:
@@ -97,12 +94,12 @@ def _split_script_to_segments(text):
     return segments
 
 
-def trim_silence(audio, sr=24000, threshold_db=-40, tail_ms=200, lead_ms=50):
+def trim_silence(audio, sr=24000, threshold_db=-42, tail_ms=200, lead_ms=100):
     """Trim leading and trailing silence from audio array.
 
-    Prevents Chatterbox from padding chunks with excessive silence
-    or repeated low-energy artifacts. Also trims leading silence so
-    crossfade stitching doesn't create double-silence gaps.
+    Removes excess silence/artifacts that Chatterbox pads onto chunks,
+    especially important for catching hallucinated outputs that contain
+    real speech buried in long silence.
     """
     if len(audio) == 0:
         return audio
@@ -114,7 +111,6 @@ def trim_silence(audio, sr=24000, threshold_db=-40, tail_ms=200, lead_ms=50):
         return audio  # all silence, return as-is
     first_loud = above[0]
     last_loud = above[-1]
-    # Keep a small margin on each side
     lead_samples = int(lead_ms / 1000.0 * sr)
     tail_samples = int(tail_ms / 1000.0 * sr)
     start = max(first_loud - lead_samples, 0)
@@ -126,7 +122,7 @@ def split_into_segments(text):
     """
     Split text into segments of speech and pauses.
 
-    Recognizes [pause:N] tags where N is seconds (int or float).
+    Recognizes [s:N] tags where N is seconds (int or float).
     Returns a list of dicts:
         {'type': 'text', 'value': 'Hello world.'}
         {'type': 'pause', 'duration': 1.5}
@@ -214,19 +210,34 @@ def chunk_text(text, max_chars=250):
     return chunks
 
 
+def _split_for_fallback(text):
+    """Split text at ; or . boundaries for fallback TTS when whole-line fails."""
+    # Try semicolons first
+    if ";" in text:
+        parts = [p.strip() for p in text.split(";") if p.strip()]
+        if len(parts) > 1:
+            return parts
+    # Try sentence boundaries (. followed by space and uppercase)
+    parts = re.split(r"(?<=[.!?])\s+(?=[A-Z])", text.strip())
+    parts = [p.strip() for p in parts if p.strip()]
+    if len(parts) > 1:
+        return parts
+    # Try comma before clause
+    if ", " in text:
+        parts = [p.strip() for p in text.split(", ", 1) if p.strip()]
+        if len(parts) > 1:
+            return parts
+    return [text]
+
+
 def count_tts_chunks(text):
     """Count the number of TTS chunks that generate() will produce.
 
-    Accounts for [pause:N] tags — only text segments are counted.
-    Each line may produce multiple TTS calls if it contains
-    multiple sentences.
+    Accounts for [s:N] tags — only text segments are counted.
+    Each line = one TTS call.
     """
     segments = _split_script_to_segments(text)
-    count = 0
-    for s in segments:
-        if s["type"] == "text":
-            count += len(split_into_sentences(s["value"]))
-    return count
+    return sum(1 for s in segments if s["type"] == "text")
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +366,7 @@ class TTSEngine:
         top_p=None,
         repetition_penalty=None,
         seed=None,
+        _is_fallback=False,
     ):
         """
         Generate audio for a single text chunk.
@@ -374,11 +386,11 @@ class TTSEngine:
         if not self.is_loaded:
             raise RuntimeError("Model not loaded. Call load_model() first.")
 
-        # Set seed for reproducible generation
-        if seed is not None:
-            torch.manual_seed(seed)
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed(seed)
+        MAX_RETRIES = 3
+        word_count = len(text.split())
+        # Only catch severe truncation (<0.18s/word) and hallucination (>1.0s/word)
+        min_duration = max(word_count * 0.18, 0.5)
+        max_duration = max(word_count * 1.0, 3.0)
 
         kwargs = {
             "text": text,
@@ -397,14 +409,89 @@ class TTSEngine:
         if voice_ref_path is not None:
             kwargs["audio_prompt_path"] = voice_ref_path
 
-        with torch.inference_mode():
-            wav_tensor = self.model.generate(**kwargs)
+        best_audio = None
+        best_diff = float("inf")
 
-        # wav_tensor shape: (1, samples) — squeeze to 1D numpy
-        audio = wav_tensor.squeeze(0).cpu().numpy()
-        # Trim trailing silence/artifacts
-        audio = trim_silence(audio, sr=SAMPLE_RATE)
-        return audio
+        for attempt in range(MAX_RETRIES + 1):
+            actual_seed = (seed + attempt) if seed is not None else None
+            if actual_seed is not None:
+                torch.manual_seed(actual_seed)
+                if torch.cuda.is_available():
+                    torch.cuda.manual_seed(actual_seed)
+
+            with torch.inference_mode():
+                wav_tensor = self.model.generate(**kwargs)
+
+            # wav_tensor shape: (1, samples) — squeeze to 1D numpy
+            audio = wav_tensor.squeeze(0).cpu().numpy()
+            audio = trim_silence(audio, sr=SAMPLE_RATE)
+            duration = len(audio) / SAMPLE_RATE
+
+            # Track best attempt (closest to expected duration)
+            expected_mid = word_count * 0.4  # ~2.5 words/sec
+            diff = abs(duration - expected_mid)
+            if diff < best_diff:
+                best_audio = audio
+                best_diff = diff
+
+            in_range = min_duration <= duration <= max_duration
+            if in_range or attempt == MAX_RETRIES:
+                if not in_range and not _is_fallback:
+                    # All retries failed — try splitting at ; or . boundaries
+                    parts = _split_for_fallback(text)
+                    if len(parts) > 1:
+                        logger.warning(
+                            f"    All attempts failed — splitting into {len(parts)} parts"
+                        )
+                        gap = np.zeros(
+                            int(0.1 * SAMPLE_RATE), dtype=np.float32
+                        )  # 100ms gap
+                        audio_parts = []
+                        for pi, part in enumerate(parts):
+                            part_audio = self.generate_chunk(
+                                text=part,
+                                voice_ref_path=voice_ref_path,
+                                temperature=temperature,
+                                top_k=top_k,
+                                top_p=top_p,
+                                repetition_penalty=repetition_penalty,
+                                seed=(seed + pi * 10) if seed is not None else None,
+                                _is_fallback=True,
+                            )
+                            audio_parts.append(part_audio)
+                            if pi < len(parts) - 1:
+                                audio_parts.append(gap)
+                        audio = np.concatenate(audio_parts)
+                        duration = len(audio) / SAMPLE_RATE
+                        logger.info(f"    Fallback split produced {duration:.1f}s")
+                        return audio
+                    # Can't split further — use best attempt
+                    audio = best_audio
+                    duration = len(audio) / SAMPLE_RATE
+                    logger.warning(
+                        f"    All attempts out of range "
+                        f"[{min_duration:.1f}s–{max_duration:.1f}s] for {word_count} words, "
+                        f"using best ({duration:.1f}s)"
+                    )
+                elif not in_range:
+                    audio = best_audio
+                    duration = len(audio) / SAMPLE_RATE
+                elif attempt > 0:
+                    logger.info(
+                        f"    Retry {attempt} OK: {duration:.1f}s "
+                        f"(range [{min_duration:.1f}s–{max_duration:.1f}s])"
+                    )
+                logger.debug(f"    Chunk audio: {duration:.1f}s for {word_count} words")
+                return audio
+
+            reason = (
+                "too short" if duration < min_duration else "too long (hallucination)"
+            )
+            logger.warning(
+                f"    Audio {reason} ({duration:.1f}s for {word_count} words, "
+                f"range [{min_duration:.1f}s–{max_duration:.1f}s]) "
+                f"— retrying with seed+{attempt + 1}"
+            )
 
     def generate(
         self,
@@ -457,13 +544,11 @@ class TTSEngine:
             output_path = os.path.join(config.AUDIO_OUTPUT_DIR, f"tts_{timestamp}.wav")
 
         # Split script into segments using line-based boundaries.
-        # Each line = one TTS call. [pause:N] tags become explicit silence.
+        # Each line = one TTS call. [s:N] tags become explicit silence.
         segments = _split_script_to_segments(text)
         has_pauses = any(s["type"] == "pause" for s in segments)
         text_segments = [s for s in segments if s["type"] == "text"]
-        total_text_chunks = sum(
-            len(split_into_sentences(s["value"])) for s in text_segments
-        )
+        total_text_chunks = len(text_segments)
         if has_pauses:
             pause_total = sum(s["duration"] for s in segments if s["type"] == "pause")
             logger.info(
@@ -481,12 +566,8 @@ class TTSEngine:
         # Lines are joined with a short controlled gap (SENTENCE_GAP_MS)
         # instead of relying on Chatterbox's unpredictable inter-sentence pauses.
         SENTENCE_GAP_MS = 200  # ms of silence between lines
-        SUB_SENTENCE_GAP_MS = 100  # ms of silence between sub-sentences within a line
         sentence_gap = np.zeros(
             int(SENTENCE_GAP_MS / 1000.0 * SAMPLE_RATE), dtype=np.float32
-        )
-        sub_sentence_gap = np.zeros(
-            int(SUB_SENTENCE_GAP_MS / 1000.0 * SAMPLE_RATE), dtype=np.float32
         )
         output_parts = []
         chunk_counter = 0
@@ -498,36 +579,29 @@ class TTSEngine:
                 logger.info(f"  Inserted {seg['duration']:.1f}s pause")
             else:
                 line_text = seg["value"]
-                # Split line into sub-sentences so Chatterbox gets
-                # short, clean chunks (avoids phantom pauses and
-                # truncation when a line has multiple sentences).
-                sub_sentences = split_into_sentences(line_text)
-                for sub_idx, sub_sent in enumerate(sub_sentences):
-                    chunk_counter += 1
-                    logger.info(
-                        f"  Generating chunk {chunk_counter}/{total_text_chunks}: "
-                        f"{sub_sent[:60]}{'...' if len(sub_sent) > 60 else ''}"
-                    )
-                    chunk_seed = config.VIDEO_SEED + chunk_counter
-                    audio = self.generate_chunk(
-                        text=sub_sent,
-                        voice_ref_path=wav_ref,
-                        temperature=temperature,
-                        top_k=top_k,
-                        top_p=top_p,
-                        repetition_penalty=repetition_penalty,
-                        seed=chunk_seed,
-                    )
-                    output_parts.append(audio)
-                    # Short gap between sub-sentences within the same line
-                    if sub_idx < len(sub_sentences) - 1:
-                        output_parts.append(sub_sentence_gap)
+                chunk_counter += 1
+                logger.info(
+                    f"  Generating chunk {chunk_counter}/{total_text_chunks}: "
+                    f"{line_text[:80]}{'...' if len(line_text) > 80 else ''}"
+                )
+                chunk_seed = config.VIDEO_SEED + chunk_counter
+                audio = self.generate_chunk(
+                    text=line_text,
+                    voice_ref_path=wav_ref,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                    repetition_penalty=repetition_penalty,
+                    seed=chunk_seed,
+                )
+                output_parts.append(audio)
                 # Insert controlled gap between lines
                 # (not after last segment, not before an explicit pause)
                 if seg_idx < len(segments) - 1:
                     next_seg = segments[seg_idx + 1]
                     if next_seg["type"] != "pause":
                         output_parts.append(sentence_gap)
+                # Advance progress once per LINE (not per sub-sentence)
                 if progress_callback is not None:
                     progress_callback()
 

@@ -69,15 +69,13 @@ DEFAULT_ACCELERATED = True
 DEFAULT_AUDIO_FORMAT = "wav"
 DEFAULT_FPS = 24
 
-# TTS sampling parameters — tuned for tight voice clone fidelity.
-# Chatterbox Turbo ignores exaggeration and cfg_weight (logged as warning).
-# These three knobs control how closely the output matches the reference voice:
-#   temperature: lower = less random, tighter match (0.6 vs default 0.8)
-#   top_k:       lower = fewer candidate tokens (50 vs Chatterbox default 1000)
-#   top_p:       lower = narrower nucleus sampling (0.85 vs Chatterbox default 0.95)
-TTS_TEMPERATURE = 0.6
-TTS_TOP_K = 40
-TTS_TOP_P = 0.8
+# TTS sampling parameters — balanced between voice fidelity and generation quality.
+# Chatterbox Turbo defaults: temp=0.8, top_k=1000, top_p=0.95, rep_penalty=1.2.
+# Too-restrictive settings (low top_k/top_p) cause truncation and hallucination
+# because the model can't find valid next tokens and hits early EOS or loops.
+TTS_TEMPERATURE = 0.7
+TTS_TOP_K = 150
+TTS_TOP_P = 0.92
 TTS_REPETITION_PENALTY = 1.2
 
 # Run timestamp — set once at startup by setup_logging(), shared across all

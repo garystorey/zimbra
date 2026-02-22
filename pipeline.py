@@ -14,7 +14,6 @@ import logging
 
 import torch
 from rich.console import Console
-from tts_engine import chunk_text
 from rich.progress import (
     Progress,
     SpinnerColumn,
@@ -189,7 +188,7 @@ class Pipeline:
         # -----------------------------------------------------------------
         est_audio_dur = _estimate_audio_duration_from_script(script_text)
         est_video_secs = _estimate_video_eta(est_audio_dur)
-        est_tts_secs = 30 + len(chunk_text(script_text)) * 8  # ~30s load + ~8s/chunk
+        est_tts_secs = 30 + count_tts_chunks(script_text) * 8  # ~30s load + ~8s/chunk
         est_video_load_secs = 60
         est_total = (
             est_tts_secs + est_video_load_secs + est_video_secs

@@ -118,18 +118,18 @@ zimbra/
 
 1. **TTS** — Chatterbox Turbo loads (~4 GB VRAM), generates voice-cloned audio from script text. Long text is chunked at sentence boundaries and crossfade-stitched.
 2. **Unload** — TTS model fully unloaded, GPU memory freed to ~0 GB.
-3. **Video** — InfiniteTalk loads with GGUF quantization (Q4_0 base + Q8 adapter, ~12.8 GB). VAE/CLIP/T5 offloaded to CPU. Block-level swapping keeps 27 blocks on GPU and swaps 13 blocks with async CUDA stream prefetch. VAE runs in bfloat16 for faster encode/decode. Generates talking-head video driven by wav2vec2 audio embeddings.
+3. **Video** — InfiniteTalk loads with GGUF quantization (Q4_0 base + Q8 adapter, ~12.8 GB). VAE/CLIP/T5 offloaded to CPU. Block-level swapping keeps 22 blocks on GPU and swaps 18 blocks with async CUDA stream prefetch. VAE runs in bfloat16 for faster encode/decode. Generates talking-head video driven by wav2vec2 audio embeddings.
 4. **Mux** — FFmpeg combines video with audio into final MP4.
 
 ## Performance
 
 On RTX 4090 Laptop (16 GB VRAM):
 
-| Stage | Time           | Notes                                             |
-| ----- | -------------- | ------------------------------------------------- |
-| TTS   | ~5-18s         | Chatterbox Turbo, depends on script length        |
-| Video | ~2.2 min/s     | 4 steps (LoRA), GGUF Q4_0, 2-pass audio CFG       |
-| Total | ~13 min / 5.8s | Measured on 5.8s video (5 chunks, 784s inference) |
+| Stage | Time             | Notes                                           |
+| ----- | ---------------- | ----------------------------------------------- |
+| TTS   | ~5-18s           | Chatterbox Turbo, depends on script length      |
+| Video | ~1.06 min/sec    | 4 steps (LoRA), GGUF Q4_0, 1-pass audio_cfg=1.0 |
+| Total | ~10.5 min / 8.2s | Measured on 8.2s video (521s inference)         |
 
 Video length always matches audio length. Video resolution matches input image aspect ratio.
 
@@ -140,15 +140,15 @@ Video length always matches audio length. Video resolution matches input image a
 
 2. **Block-level swapping with async prefetch** — Entire DiT blocks are swapped instead of
    per-layer transfers. While block N computes on GPU, block N+1 prefetches from CPU via a
-   dedicated CUDA stream. Auto-tuned: 27/40 blocks on GPU, 13 blocks swap (16 GB VRAM).
+   dedicated CUDA stream. Auto-tuned: 22/40 blocks on GPU, 18 blocks swap (16 GB VRAM).
 
-3. **LightX2V distilled LoRA** — Reduces denoising from 20 steps to 6 steps. LoRA patches
+3. **LightX2V I2V rank-64 distilled LoRA** — Reduces denoising from 20 steps to 4 steps. LoRA patches
    applied as buffers during GGUF dequantization forward pass.
 
 4. **VAE bfloat16** — VAE encode/decode run in bfloat16 for ~2x faster throughput on tensor
    cores vs float32 default.
 
-5. **Smaller chunks** — `frame_num=41` (down from 81) reduces per-chunk activation VRAM.
+5. **Larger chunks** — `frame_num=81` reduces chunk count, improving quality (fewer chunk boundaries).
 
 6. **Strategic model offloading** — VAE, CLIP, and T5 are offloaded to CPU before the
    denoising loop. T5 runs on CPU (`t5_cpu=True`) since it only encodes the prompt once.
@@ -165,12 +165,12 @@ All models auto-download on first run:
 | chinese-wav2vec2-base     | `TencentGameMate/chinese-wav2vec2-base` | ~360 MB  |
 | GGUF base (Q4_0)          | `city96/Wan2.1-I2V-14B-480P-gguf`       | ~10.2 GB |
 | GGUF adapter (Q8)         | `Kijai/WanVideo_comfy_GGUF`             | ~2.65 GB |
-| LightX2V LoRA             | `Kijai/WanVideo_comfy`                  | ~317 MB  |
+| LightX2V I2V LoRA rank-64 | `Kijai/WanVideo_comfy`                  | ~738 MB  |
 
 ## Troubleshooting
 
 - **"No CUDA GPU detected"** — Ensure NVIDIA drivers are installed and `nvidia-smi` works.
-- **"GPU out of memory"** — Close other GPU applications. Use `--video-size infinitetalk-480`. GGUF mode needs ~13 GB VRAM (27 persistent blocks + swap buffer + activation headroom).
+- **"GPU out of memory"** — Close other GPU applications. GGUF mode needs ~13.5 GB VRAM (22 persistent blocks + swap buffer + 8.2 GB activation headroom).
 - **HuggingFace auth errors** — Run `huggingface-cli login` and accept the Chatterbox model license.
 - **FFmpeg not found** — Install FFmpeg and add to PATH, or `pip install imageio-ffmpeg`.
 - **Triton warning on Windows** — Expected and harmless (no Windows wheels available).
