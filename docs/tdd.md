@@ -95,7 +95,7 @@ sequenceDiagram
     VE->>GPU: Free to 0 GB
 
     Pipe-->>CLI: {audio_path, video_path, timings}
-    CLI-->>User: Done! outputs/video/video_*.mp4
+    CLI-->>User: Done! output/*.mp4
 ```
 
 ### 2.2 VRAM Timeline
@@ -417,7 +417,7 @@ stateDiagram-v2
 ```mermaid
 flowchart TD
     A[logging.debug/info/warning] --> B{Root Logger<br/>Level: DEBUG}
-    B --> C[File Handler<br/>Level: DEBUG<br/>outputs/logs/run_*.log]
+    B --> C[File Handler<br/>Level: DEBUG<br/>output/*.log]
     B --> D{--verbose?}
     D -->|Yes| E[Console Handler<br/>Level: DEBUG<br/>stderr]
     D -->|No| F[No console output]

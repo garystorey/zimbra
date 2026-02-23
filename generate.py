@@ -57,10 +57,15 @@ def build_parser():
     )
     parser.add_argument(
         "--video-only",
-        type=str,
+        nargs="?",
+        const="__DEFAULT__",
         default=None,
         metavar="AUDIO_PATH",
-        help="Generate video from existing audio file (skip TTS)",
+        help=(
+            "Generate video from existing audio file (skip TTS). "
+            "If no audio path is given, uses inputs/scripts/default.wav or "
+            "default.mp3 as the audio source."
+        ),
     )
     parser.add_argument(
         "--animation",
@@ -79,15 +84,29 @@ def build_parser():
         help="Enable verbose/debug logging",
     )
 
+    parser.add_argument(
+        "--filename",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help=(
+            "Base filename for all output files (audio, video, log, contact sheet). "
+            "All outputs share this name with their respective extensions. "
+            "If files with this name already exist, an incremented suffix "
+            "(_01, _02, …) is appended automatically. "
+            "Defaults to 'run_YYYYMMDD_HHMMSS' timestamp format."
+        ),
+    )
+
     return parser
 
 
 def setup_logging(verbose=False):
     """Configure logging for the application.
 
-    A timestamped log file is ALWAYS created in outputs/logs/ with full
-    verbose/debug logging, regardless of the --verbose flag.  This allows
-    post-run diagnosis by reading the log file.
+    A log file is ALWAYS created in output/ with full verbose/debug
+    logging, regardless of the --verbose flag.  This allows post-run
+    diagnosis by reading the log file.
 
     When verbose=False (default), console output is suppressed so the CLI
     shows only the title and progress bars.  When verbose=True, debug
@@ -98,12 +117,21 @@ def setup_logging(verbose=False):
     """
     import time as _time
 
-    # Ensure logs directory exists (early, before config.ensure_directories)
-    os.makedirs(config.LOGS_DIR, exist_ok=True)
+    # Ensure output directory exists (early, before config.ensure_directories)
+    os.makedirs(config.OUTPUT_DIR, exist_ok=True)
 
     timestamp = _time.strftime("%Y%m%d_%H%M%S")
     config.RUN_TIMESTAMP = timestamp
-    log_file = os.path.join(config.LOGS_DIR, f"run_{timestamp}.log")
+
+    # Resolve output filename (may already be set by main() from --filename)
+    if config.RUN_FILENAME is None:
+        import utils
+
+        config.RUN_FILENAME = utils.resolve_output_filename(
+            f"run_{timestamp}", config.OUTPUT_DIR
+        )
+
+    log_file = os.path.join(config.OUTPUT_DIR, f"{config.RUN_FILENAME}.log")
 
     # --- File handler: always verbose ---
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
@@ -234,6 +262,15 @@ def main():
     args = parser.parse_args()
 
     config._VERBOSE = args.verbose
+
+    # Resolve --filename before logging so the log file uses the same name
+    if args.filename is not None:
+        import utils
+
+        config.RUN_FILENAME = utils.resolve_output_filename(
+            args.filename, config.OUTPUT_DIR
+        )
+
     log_file = setup_logging(verbose=args.verbose)
 
     from rich.console import Console
@@ -254,14 +291,25 @@ def main():
     animation_prompt = _resolve_animation(args.animation)
 
     # --video-only: skip TTS, go straight to video
-    if args.video_only:
+    if args.video_only is not None:
         import utils
         import time as _time
         import model_manager
         from pipeline import _make_progress, _fmt, _estimate_video_eta
         from video_engine import VideoEngine
 
-        audio_path = args.video_only
+        if args.video_only == "__DEFAULT__":
+            audio_path = config.DEFAULT_AUDIO_FILE
+            if audio_path is None:
+                console.print(
+                    "[red]ERROR: No audio file specified and no default audio found.\n"
+                    "Place a default.wav or default.mp3 in inputs/scripts/ "
+                    "or pass an audio path: --video-only path/to/audio.wav[/red]"
+                )
+                return 1
+            console.print(f"[dim]Using default audio: {audio_path}[/dim]")
+        else:
+            audio_path = args.video_only
         utils.validate_audio_file(audio_path)
 
         image = config.DEFAULT_IMAGE

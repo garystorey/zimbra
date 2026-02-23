@@ -17,7 +17,7 @@ import platform
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 INPUTS_DIR = os.path.join(PROJECT_ROOT, "inputs")
-OUTPUTS_DIR = os.path.join(PROJECT_ROOT, "outputs")
+OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output")
 MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
 VENDOR_DIR = os.path.join(PROJECT_ROOT, "vendor")
 
@@ -26,9 +26,6 @@ IMAGES_DIR = os.path.join(INPUTS_DIR, "images")
 SCRIPTS_DIR = os.path.join(INPUTS_DIR, "scripts")
 ANIMATION_DIR = os.path.join(INPUTS_DIR, "animation")
 
-AUDIO_OUTPUT_DIR = os.path.join(OUTPUTS_DIR, "audio")
-VIDEO_OUTPUT_DIR = os.path.join(OUTPUTS_DIR, "video")
-LOGS_DIR = os.path.join(OUTPUTS_DIR, "logs")
 
 INFINITETALK_MODELS_DIR = os.path.join(MODELS_DIR, "infinitetalk")
 CHATTERBOX_MODELS_DIR = os.path.join(MODELS_DIR, "chatterbox")
@@ -59,6 +56,10 @@ DEFAULT_VOICE_REF = _find_default_file(
 DEFAULT_IMAGE = _find_default_file(IMAGES_DIR, "default", DEFAULT_IMAGE_EXTENSIONS)
 DEFAULT_SCRIPT_FILE = os.path.join(SCRIPTS_DIR, "default.txt")
 DEFAULT_ANIMATION_FILE = os.path.join(ANIMATION_DIR, "default.txt")
+DEFAULT_AUDIO_EXTENSIONS = (".wav", ".mp3")
+DEFAULT_AUDIO_FILE = _find_default_file(
+    SCRIPTS_DIR, "default", DEFAULT_AUDIO_EXTENSIONS
+)
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +82,7 @@ TTS_REPETITION_PENALTY = 1.2
 # Run timestamp — set once at startup by setup_logging(), shared across all
 # output filenames (log, audio, video) so they can be correlated easily.
 RUN_TIMESTAMP = None  # Will be set to e.g. "20260219_201603"
+RUN_FILENAME = None  # Will be set to the resolved output base filename
 
 
 # ---------------------------------------------------------------------------
@@ -333,9 +335,7 @@ if FFMPEG_PATH:
 def ensure_directories():
     """Create all runtime directories if they don't exist."""
     dirs = [
-        AUDIO_OUTPUT_DIR,
-        VIDEO_OUTPUT_DIR,
-        LOGS_DIR,
+        OUTPUT_DIR,
         INFINITETALK_MODELS_DIR,
         CHATTERBOX_MODELS_DIR,
         LORA_DIR,

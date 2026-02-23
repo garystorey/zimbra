@@ -538,10 +538,13 @@ class TTSEngine:
 
         # Auto-generate output path if not provided
         if output_path is None:
-            timestamp = getattr(config, "RUN_TIMESTAMP", None) or time.strftime(
-                "%Y%m%d_%H%M%S"
-            )
-            output_path = os.path.join(config.AUDIO_OUTPUT_DIR, f"tts_{timestamp}.wav")
+            run_filename = getattr(config, "RUN_FILENAME", None)
+            if run_filename is None:
+                timestamp = getattr(config, "RUN_TIMESTAMP", None) or time.strftime(
+                    "%Y%m%d_%H%M%S"
+                )
+                run_filename = f"run_{timestamp}"
+            output_path = os.path.join(config.OUTPUT_DIR, f"{run_filename}.wav")
 
         # Split script into segments using line-based boundaries.
         # Each line = one TTS call. [s:N] tags become explicit silence.

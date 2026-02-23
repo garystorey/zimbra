@@ -7,7 +7,7 @@ venv/
 models/
 
 # Generated outputs
-outputs/
+output/
 
 # Vendored repos (cloned at install)
 vendor/

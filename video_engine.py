@@ -463,12 +463,13 @@ class VideoEngine:
 
         # Auto-generate output path
         if output_path is None:
-            timestamp = getattr(config, "RUN_TIMESTAMP", None) or time.strftime(
-                "%Y%m%d_%H%M%S"
-            )
-            output_path = os.path.join(
-                config.VIDEO_OUTPUT_DIR, f"video_{timestamp}.mp4"
-            )
+            run_filename = getattr(config, "RUN_FILENAME", None)
+            if run_filename is None:
+                timestamp = getattr(config, "RUN_TIMESTAMP", None) or time.strftime(
+                    "%Y%m%d_%H%M%S"
+                )
+                run_filename = f"run_{timestamp}"
+            output_path = os.path.join(config.OUTPUT_DIR, f"{run_filename}.mp4")
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
         # --- Prepare audio ---

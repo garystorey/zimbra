@@ -20,6 +20,44 @@ SUPPORTED_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".webp")
 
 
 # ---------------------------------------------------------------------------
+# Output filename resolution
+# ---------------------------------------------------------------------------
+
+
+def resolve_output_filename(base_name, output_dir=None):
+    """Resolve output base filename with deduplication.
+
+    If any files matching ``base_name.*`` already exist in *output_dir*,
+    appends ``_01``, ``_02``, … until a free slot is found.
+
+    Args:
+        base_name: Desired base filename (no extension).
+        output_dir: Directory to check for collisions.
+            Defaults to ``config.OUTPUT_DIR``.
+
+    Returns:
+        The (possibly suffixed) base filename that is free of collisions.
+    """
+    import glob
+
+    if output_dir is None:
+        output_dir = config.OUTPUT_DIR
+    os.makedirs(output_dir, exist_ok=True)
+
+    pattern = os.path.join(output_dir, f"{base_name}.*")
+    if not glob.glob(pattern):
+        return base_name
+
+    counter = 1
+    while True:
+        candidate = f"{base_name}_{counter:02d}"
+        pattern = os.path.join(output_dir, f"{candidate}.*")
+        if not glob.glob(pattern):
+            return candidate
+        counter += 1
+
+
+# ---------------------------------------------------------------------------
 # File validation
 # ---------------------------------------------------------------------------
 
@@ -272,7 +310,7 @@ def generate_contact_sheet(video_path, output_path=None, cols=4, frame_interval=
 
     if output_path is None:
         base = os.path.splitext(video_path)[0]
-        output_path = base + "_contact_sheet.png"
+        output_path = base + ".png"
 
     if frame_interval is None:
         frame_interval = config.VIDEO_FPS  # ~1 frame per second

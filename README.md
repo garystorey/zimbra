@@ -59,7 +59,7 @@ python generate.py
 python generate.py --audio-only
 
 # Video only from existing audio
-python generate.py --video-only outputs/audio/tts_20250216.wav
+python generate.py --video-only output/run_20250216.wav
 ```
 
 ### Options
@@ -69,6 +69,7 @@ python generate.py --video-only outputs/audio/tts_20250216.wav
 | `--audio-only`        | Generate audio only (skip video)                  |
 | `--video-only AUDIO`  | Generate video from existing audio file           |
 | `--animation TEXT`    | Animation description (text or path to .txt file) |
+| `--filename NAME`     | Base filename for all outputs (auto-increments)   |
 | `--verbose`           | Debug logging                                     |
 | `--blocks-to-swap N`  | DiT blocks to swap CPU↔GPU (default: auto-tune)   |
 | `--prefetch-blocks N` | Async prefetch N blocks ahead (default: 1)        |
@@ -95,9 +96,7 @@ zimbra/
 │   ├── voice_ref/default.mp3    # Default voice reference
 │   ├── scripts/default.txt      # Default script text
 │   └── animation/default.txt    # Default animation description
-├── outputs/                  # Generated files (gitignored)
-│   ├── audio/                # TTS audio
-│   └── video/                # Final videos
+├── output/                   # All generated files (gitignored)
 ├── models/                   # Model weights (gitignored, ~32 GB)
 ├── vendor/                   # Cloned repos (gitignored)
 │   └── infinitetalk/         # InfiniteTalk source

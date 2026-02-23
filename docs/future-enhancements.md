@@ -22,7 +22,13 @@ Completed. TTS pipeline produces good voice cloning with sub-sentence splitting,
 
 ---
 
-## 3. Web Interface for CLI Parameters
+## 4. ~~Default Audio File for `--video-only` Mode~~ ✅ Done
+
+Completed. `--video-only` now accepts an optional audio path. When omitted, resolves `inputs/scripts/default.wav` then `default.mp3` via `config.DEFAULT_AUDIO_FILE`. Clear error message if neither exists.
+
+---
+
+## 5. Web Interface for CLI Parameters
 
 **Priority: Medium — Usability.**
 
@@ -52,7 +58,7 @@ Create a simple local web UI that exposes the CLI parameters in a browser form, 
 
 ---
 
-## 4. Performance Improvements
+## 6. Performance Improvements
 
 | Improvement          | Expected Impact                                       | Blocker                                         |
 | -------------------- | ----------------------------------------------------- | ----------------------------------------------- |

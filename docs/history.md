@@ -184,6 +184,23 @@ Three issues discovered when testing with multi-sentence dialogue lines (e.g. `I
 
 Files modified: `tts_engine.py`, `config.py`
 
+### Phase 17: Output Directory Restructure + `--filename` CLI
+
+Simplified output management by flattening the directory structure and adding user-controllable filenames.
+
+**Changes:**
+
+- **Renamed `outputs/` → `output/`** — Single flat directory replaces the previous `outputs/audio/`, `outputs/video/`, `outputs/logs/` subdirectory structure.
+- **All output files share one base filename** — `.wav` (audio), `.mp4` (video), `.png` (contact sheet), `.log` (debug log) all use the same base name with their respective extensions.
+- **Added `--filename NAME` CLI param** — Lets the user specify the base filename for all outputs. If files with that name already exist, an incremented suffix (`_01`, `_02`, …) is appended automatically.
+- **Default when `--filename` omitted** — Falls back to `run_YYYYMMDD_HHMMSS` timestamp format (same correlation as before, just in a flat directory).
+- **`config.RUN_FILENAME`** — New config variable set once at startup, used by all output paths (log, audio, video, contact sheet).
+- **`utils.resolve_output_filename()`** — New utility function that checks for existing files and auto-increments the suffix.
+
+**Config changes:** `OUTPUTS_DIR` → `OUTPUT_DIR`, removed `AUDIO_OUTPUT_DIR`, `VIDEO_OUTPUT_DIR`, `LOGS_DIR`.
+
+**Files modified:** `config.py`, `generate.py`, `pipeline.py`, `tts_engine.py`, `video_engine.py`, `utils.py`, `.gitignore`, `README.md`, all docs.
+
 ---
 
 ## Windows Compatibility Discoveries

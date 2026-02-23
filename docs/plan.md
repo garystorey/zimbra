@@ -156,7 +156,7 @@ zimbra/
 │   ├── voice_ref/default.mp3
 │   ├── scripts/default.txt
 │   └── animation/default.txt
-├── outputs/                    # Generated files (gitignored)
+├── output/                     # All generated files (gitignored)
 ├── models/                     # Downloaded model weights (gitignored, ~20 GB)
 ├── vendor/infinitetalk/        # Cloned from garystorey/InfiniteTalk fork (gitignored)
 ├── venv/                       # Virtual environment (gitignored)
@@ -207,7 +207,7 @@ VIDEO_MODE = "streaming"                    # Unlimited-length video in overlapp
 ### 7.3 Key `config.py` Functions
 
 - **`auto_tune_blocks_to_swap()`** — Calculates optimal block swap count based on free VRAM, accounting for activation reserve + swap buffer + non-block overhead
-- **`ensure_directories()`** — Creates all runtime dirs (outputs/, models/, etc.)
+- **`ensure_directories()`** — Creates all runtime dirs (output/, models/, etc.)
 - **`get_gpu_info()`** — Returns GPU name, CUDA version, VRAM
 - **FFmpeg discovery** — env var → PATH → `imageio-ffmpeg` fallback
 
@@ -390,6 +390,7 @@ Ported from [city96/ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) (Apach
 | `--audio-only`        | Generate audio only (skip video)                  |                                |
 | `--video-only AUDIO`  | Generate video from existing audio file           |                                |
 | `--animation TEXT`    | Animation description (text or path to .txt file) | `inputs/animation/default.txt` |
+| `--filename NAME`     | Base filename for all outputs (auto-increments)   | `run_YYYYMMDD_HHMMSS`          |
 | `--audio-cfg SCALE`   | Audio guidance scale                              | 1.0                            |
 | `--blocks-to-swap N`  | DiT blocks to swap CPU↔GPU (0-40)                 | auto-tune                      |
 | `--prefetch-blocks N` | Async prefetch N blocks ahead                     | 1                              |
@@ -411,7 +412,7 @@ These rules were each learned through painful debugging. Violating any causes si
 8. **Always offload DiT blocks before VAE decode** — 3D transposed conv needs VRAM headroom.
 9. **Skip block offload for CLIP+VAE encode** — GGUF model fits alongside.
 10. **`torch.cuda.empty_cache()` between forward passes** — Essential for GGUF dequant temporaries.
-11. **All output files share `config.RUN_TIMESTAMP`** — Set once in `setup_logging()`.
+11. **All output files share `config.RUN_FILENAME`** — Resolved once at startup from `--filename` or timestamp. All outputs (`.wav`, `.mp4`, `.png`, `.log`) use the same base name in `output/`.
 12. **Root logger must be DEBUG level** — Console handler controls visibility.
 13. **Re-pin block memory after each offload** — `nn.Module.to()` creates new tensors.
 14. **`python -m pip` on Windows** — Not `pip.exe`, to avoid file locking.

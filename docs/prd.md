@@ -34,12 +34,12 @@ Content creators, developers, and hobbyists who need talking-head video generati
 
 ### 2.2 Output Requirements
 
-| Output            | Format                        | Location                                          |
-| ----------------- | ----------------------------- | ------------------------------------------------- |
-| **Video**         | MP4 (H.264 + AAC) at 25 FPS   | `outputs/video/video_TIMESTAMP.mp4`               |
-| **Audio**         | WAV at 24 kHz                 | `outputs/audio/tts_TIMESTAMP.wav`                 |
-| **Contact sheet** | PNG grid of frames (1/sec)    | `outputs/video/video_TIMESTAMP_contact_sheet.png` |
-| **Debug log**     | Text log (always DEBUG level) | `outputs/logs/run_TIMESTAMP.log`                  |
+| Output            | Format                        | Location              |
+| ----------------- | ----------------------------- | --------------------- |
+| **Video**         | MP4 (H.264 + AAC) at 25 FPS   | `output/FILENAME.mp4` |
+| **Audio**         | WAV at 24 kHz                 | `output/FILENAME.wav` |
+| **Contact sheet** | PNG grid of frames (1/sec)    | `output/FILENAME.png` |
+| **Debug log**     | Text log (always DEBUG level) | `output/FILENAME.log` |
 
 ### 2.3 Functional Capabilities
 
@@ -69,7 +69,8 @@ Content creators, developers, and hobbyists who need talking-head video generati
 - Estimated total time displayed before generation begins
 - Rich progress bars for each pipeline stage
 - Guaranteed model cleanup on error or interruption (Ctrl+C)
-- All output files share a timestamp for correlation
+- All output files share a base filename (`--filename` or timestamp) for correlation
+- `--filename NAME` CLI param for user-specified output names with auto-increment deduplication
 
 #### FR-4: Model Management
 
@@ -159,7 +160,7 @@ flowchart TD
     I --> J[Video: Load InfiniteTalk GGUF]
     J --> K[Video: Generate chunks with progress bar]
     K --> L[Save MP4 + contact sheet]
-    L --> M[Done! Output in outputs/]
+    L --> M[Done! Output in output/]
 ```
 
 ### 5.2 Subsequent Runs
@@ -169,7 +170,7 @@ flowchart TD
     A[Edit inputs/scripts/default.txt] --> B[Run generate.bat]
     B --> C[TTS generates audio ~10s]
     C --> D[Video generates ~1 min/sec of audio]
-    D --> E[MP4 ready in outputs/video/]
+    D --> E[MP4 ready in output/]
 ```
 
 ---

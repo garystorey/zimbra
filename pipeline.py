@@ -216,10 +216,14 @@ class Pipeline:
         # TTS — Generate audio
         # -----------------------------------------------------------------
         tts_start = time.time()
-        timestamp = getattr(config, "RUN_TIMESTAMP", None) or time.strftime(
-            "%Y%m%d_%H%M%S"
-        )
-        audio_output = os.path.join(config.AUDIO_OUTPUT_DIR, f"tts_{timestamp}.wav")
+        run_filename = getattr(config, "RUN_FILENAME", None)
+        if run_filename is None:
+            timestamp = getattr(config, "RUN_TIMESTAMP", None) or time.strftime(
+                "%Y%m%d_%H%M%S"
+            )
+            run_filename = f"run_{timestamp}"
+        audio_output = os.path.join(config.OUTPUT_DIR, f"{run_filename}.wav")
+        video_output = os.path.join(config.OUTPUT_DIR, f"{run_filename}.mp4")
 
         try:
             self.tts_engine = TTSEngine()
@@ -283,6 +287,7 @@ class Pipeline:
                 video_path = self.video_engine.generate(
                     image_path=image,
                     audio_path=audio_path,
+                    output_path=video_output,
                     animation_prompt=animation_prompt,
                 )
             else:
@@ -320,6 +325,7 @@ class Pipeline:
                     video_path = self.video_engine.generate(
                         image_path=image,
                         audio_path=audio_path,
+                        output_path=video_output,
                         animation_prompt=animation_prompt,
                         step_callback=lambda: progress.advance(gen_task),
                     )
