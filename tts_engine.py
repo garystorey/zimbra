@@ -562,9 +562,6 @@ class TTSEngine:
         Returns:
             Path to the generated WAV file.
         """
-        if not self.is_loaded:
-            self.load_model()
-
         # Ensure output directory exists
         config.ensure_directories()
 
@@ -611,6 +608,10 @@ class TTSEngine:
                 f"Text: {total_text_chunks} line(s), no explicit pauses "
                 f"(200ms gap between lines)"
             )
+
+        # Only load the TTS model if there are text segments to synthesize
+        if total_text_chunks > 0 and not self.is_loaded:
+            self.load_model()
 
         # Generate audio — one TTS call per line.
         # Lines are joined with a short controlled gap (SENTENCE_GAP_MS)

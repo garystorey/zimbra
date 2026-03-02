@@ -76,7 +76,6 @@ python generate.py --video-only output/run_20250216.wav
 | `--video-only AUDIO`  | Generate video from existing audio file                       |
 | `--animation TEXT`    | Animation description (text or path to .txt file)             |
 | `--filename NAME`     | Base filename for all outputs (auto-increments)               |
-| `--verbose`           | Debug logging                                                 |
 | `--blocks-to-swap N`  | DiT blocks to swap CPU↔GPU (default: auto-tune)               |
 | `--prefetch-blocks N` | Async prefetch N blocks ahead (default: 1)                    |
 

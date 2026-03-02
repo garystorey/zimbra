@@ -116,13 +116,12 @@ Content creators, developers, and hobbyists who need talking-head video generati
 - GPU OOM errors caught and reported with actionable message
 - Thermal management: auto-pause between chunks if GPU exceeds 70°C
 - Graceful handling of KeyboardInterrupt with model cleanup
-- Logging always captures full debug output to file regardless of `--verbose`
+- Logging always captures full debug output to file for post-run diagnosis
 
 ### 3.4 Usability
 
 - Sensible defaults for all parameters — `generate.bat` with zero arguments produces output
-- Rich progress bars (not raw log spam) in normal mode
-- `--verbose` flag for full debug output when troubleshooting
+- Rich progress bars for all operations (clean UI, full debug detail in log file)
 - Clear error messages with suggested fixes
 
 ---
@@ -198,7 +197,6 @@ flowchart TD
 | `--audio-cfg SCALE`   | float       | 1.0                            | Audio guidance scale (2.0 = stronger lip sync, 2× slower) |
 | `--blocks-to-swap N`  | int         | auto-tune                      | DiT blocks to swap CPU↔GPU (0-40)                         |
 | `--prefetch-blocks N` | int         | 1                              | Async prefetch blocks ahead                               |
-| `--verbose`           | flag        | off                            | Debug logging to console                                  |
 
 ---
 

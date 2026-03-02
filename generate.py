@@ -6,7 +6,6 @@ Usage:
     python generate.py --audio-only  Generate audio only
     python generate.py --video-only path/to/audio.wav   Video from existing audio
     python generate.py --text "Hello everyone. [s:1] I am Gary"
-    python generate.py --verbose    Debug logging
 
 Inputs are read from the inputs/ folder:
     inputs/scripts/default.txt      Script text
@@ -92,12 +91,6 @@ def build_parser():
         ),
     )
     parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Enable verbose/debug logging",
-    )
-
-    parser.add_argument(
         "--filename",
         type=str,
         default=None,
@@ -114,16 +107,13 @@ def build_parser():
     return parser
 
 
-def setup_logging(verbose=False):
+def setup_logging():
     """Configure logging for the application.
 
     A log file is ALWAYS created in output/ with full verbose/debug
-    logging, regardless of the --verbose flag.  This allows post-run
-    diagnosis by reading the log file.
-
-    When verbose=False (default), console output is suppressed so the CLI
-    shows only the title and progress bars.  When verbose=True, debug
-    output also appears on the console.
+    logging.  Console output is suppressed so the CLI shows only the
+    title and progress bars.  All debug/info messages are written to
+    the log file for post-run diagnosis.
 
     Returns:
         str: Absolute path to the log file for this run.
@@ -178,48 +168,33 @@ def setup_logging(verbose=False):
     for name in ("numba", "PIL", "torio"):
         logging.getLogger(name).setLevel(logging.WARNING)
 
-    if verbose:
-        # Also add a console handler so debug output appears on screen.
-        console_handler = logging.StreamHandler(sys.stderr)
-        console_handler.setLevel(logging.DEBUG)
-        console_handler.setFormatter(
-            logging.Formatter(
-                "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-                datefmt="%H:%M:%S",
-            )
-        )
-        root.addHandler(console_handler)
-        # Root at DEBUG so vendor [diag] messages reach the file handler.
-        # Console handler is at DEBUG too with --verbose so user sees everything.
-        root.setLevel(logging.DEBUG)
-    else:
-        # Root at DEBUG so everything goes to the file, but nothing to console.
-        root.setLevel(logging.DEBUG)
+    # Root at DEBUG so everything goes to the file, but nothing to console.
+    root.setLevel(logging.DEBUG)
 
-        # Redirect vendor print() / tqdm to devnull
-        import tqdm as _tqdm_mod
+    # Redirect vendor print() / tqdm to devnull
+    import tqdm as _tqdm_mod
 
-        _devnull = open(os.devnull, "w")
-        _tqdm_mod.tqdm.__init_original__ = _tqdm_mod.tqdm.__init__
+    _devnull = open(os.devnull, "w")
+    _tqdm_mod.tqdm.__init_original__ = _tqdm_mod.tqdm.__init__
 
-        _orig_init = _tqdm_mod.tqdm.__init__
+    _orig_init = _tqdm_mod.tqdm.__init__
 
-        def _silent_tqdm_init(self, *a, **kw):
-            kw["disable"] = True
-            _orig_init(self, *a, **kw)
+    def _silent_tqdm_init(self, *a, **kw):
+        kw["disable"] = True
+        _orig_init(self, *a, **kw)
 
-        _tqdm_mod.tqdm.__init__ = _silent_tqdm_init
+    _tqdm_mod.tqdm.__init__ = _silent_tqdm_init
 
-        # Suppress Python warnings (FutureWarning, DeprecationWarning, etc.)
-        import warnings
+    # Suppress Python warnings (FutureWarning, DeprecationWarning, etc.)
+    import warnings
 
-        warnings.filterwarnings("ignore")
+    warnings.filterwarnings("ignore")
 
-        # Capture stray print()/stderr from vendor code (e.g. xformers triton warning).
-        # Store real stderr FIRST so rich Console progress bars still work.
-        config._REAL_STDERR = sys.stderr
-        sys.stdout = _devnull
-        sys.stderr = _devnull
+    # Capture stray print()/stderr from vendor code (e.g. xformers triton warning).
+    # Store real stderr FIRST so rich Console progress bars still work.
+    config._REAL_STDERR = sys.stderr
+    sys.stdout = _devnull
+    sys.stderr = _devnull
 
     return log_file
 
@@ -274,8 +249,6 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
 
-    config._VERBOSE = args.verbose
-
     # Resolve --filename before logging so the log file uses the same name
     if args.filename is not None:
         import utils
@@ -284,7 +257,7 @@ def main():
             args.filename, config.OUTPUT_DIR
         )
 
-    log_file = setup_logging(verbose=args.verbose)
+    log_file = setup_logging()
 
     from rich.console import Console
     from pipeline import Pipeline
@@ -348,57 +321,45 @@ def main():
         try:
             eta_secs = None
 
-            if args.verbose:
-                engine.load_model()
+            with _make_progress(console) as progress:
+                load_task = progress.add_task("Loading video model", total=6)
+
+                def _load_progress(step, total, desc):
+                    progress.update(
+                        load_task,
+                        completed=step,
+                        total=total,
+                    )
+
+                engine.load_model(progress_callback=_load_progress)
+                progress.update(
+                    load_task,
+                    completed=6,
+                    total=6,
+                    description="Loading video model",
+                )
                 _vo_start = _time.time()
+
                 audio_duration = engine.get_audio_duration(audio_path)
                 total_steps = engine.estimate_total_steps(audio_duration)
+
+                eta_secs = _estimate_video_eta(audio_duration)
+                console.print(
+                    f"[dim]Video ETA: ~{_fmt(eta_secs)} " f"({total_steps} steps)[/dim]"
+                )
+
+                gen_task = progress.add_task("Generating video", total=total_steps)
+
                 video_path = engine.generate(
                     image_path=image,
                     audio_path=audio_path,
                     animation_prompt=animation_prompt,
+                    step_callback=lambda: progress.advance(gen_task),
                 )
-            else:
-                with _make_progress(console) as progress:
-                    load_task = progress.add_task("Loading video model", total=6)
-
-                    def _load_progress(step, total, desc):
-                        progress.update(
-                            load_task,
-                            completed=step,
-                            total=total,
-                        )
-
-                    engine.load_model(progress_callback=_load_progress)
-                    progress.update(
-                        load_task,
-                        completed=6,
-                        total=6,
-                        description="Loading video model",
-                    )
-                    _vo_start = _time.time()
-
-                    audio_duration = engine.get_audio_duration(audio_path)
-                    total_steps = engine.estimate_total_steps(audio_duration)
-
-                    eta_secs = _estimate_video_eta(audio_duration)
-                    console.print(
-                        f"[dim]Video ETA: ~{_fmt(eta_secs)} "
-                        f"({total_steps} steps)[/dim]"
-                    )
-
-                    gen_task = progress.add_task("Generating video", total=total_steps)
-
-                    video_path = engine.generate(
-                        image_path=image,
-                        audio_path=audio_path,
-                        animation_prompt=animation_prompt,
-                        step_callback=lambda: progress.advance(gen_task),
-                    )
-                    progress.update(gen_task, completed=total_steps)
+                progress.update(gen_task, completed=total_steps)
 
             _vo_elapsed = _time.time() - _vo_start
-            if not args.verbose and eta_secs:
+            if eta_secs:
                 logging.getLogger(__name__).info(
                     f"ETA accuracy — Video: estimated {eta_secs:.0f}s, "
                     f"actual {_vo_elapsed:.1f}s, "
@@ -446,25 +407,18 @@ def main():
         try:
             _ao_start = _time.time()
 
-            if args.verbose:
+            with _make_progress(console) as progress:
+                load_task = progress.add_task("Loading TTS model", total=None)
                 engine.load_model()
+                progress.update(load_task, total=1, completed=1)
+
+                gen_task = progress.add_task("Generating audio", total=num_chunks)
+
                 audio_path = engine.generate(
                     text=script_text,
                     voice_ref_path=voice_ref,
+                    progress_callback=lambda: progress.advance(gen_task),
                 )
-            else:
-                with _make_progress(console) as progress:
-                    load_task = progress.add_task("Loading TTS model", total=None)
-                    engine.load_model()
-                    progress.update(load_task, total=1, completed=1)
-
-                    gen_task = progress.add_task("Generating audio", total=num_chunks)
-
-                    audio_path = engine.generate(
-                        text=script_text,
-                        voice_ref_path=voice_ref,
-                        progress_callback=lambda: progress.advance(gen_task),
-                    )
 
             _ao_elapsed = _time.time() - _ao_start
             logging.getLogger(__name__).info(
@@ -490,7 +444,6 @@ def main():
     try:
         result = pipeline.run(
             animation_prompt=animation_prompt,
-            verbose=args.verbose,
             script_text=args.text,
         )
         return 0

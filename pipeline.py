@@ -27,7 +27,7 @@ from rich.progress import (
 import config
 import utils
 import model_manager
-from tts_engine import TTSEngine, count_tts_chunks
+from tts_engine import TTSEngine, count_tts_chunks, _split_script_to_segments
 from video_engine import VideoEngine
 
 logger = logging.getLogger(__name__)
@@ -95,9 +95,38 @@ def _estimate_video_eta(audio_duration):
 
 
 def _estimate_audio_duration_from_script(script_text):
-    """Rough estimate: ~2.5 words/sec typical speech rate."""
-    words = len(script_text.split())
-    return max(words / 2.5, 1.0)
+    """Estimate total audio duration from script text.
+
+    Accounts for:
+    - Text segments: ~2.5 words/sec typical speech rate
+    - Pause tags [s:N]: exact duration
+    - Audio file references ${file}: actual file duration
+    - Front/end padding added by TTS engine (0.75s)
+    """
+    import soundfile as sf
+
+    segments = _split_script_to_segments(script_text)
+    total = 0.75  # front (0.25s) + end (0.5s) padding added by TTS engine
+
+    for seg in segments:
+        if seg["type"] == "text":
+            words = len(seg["value"].split())
+            total += max(words / 2.5, 0.5)
+        elif seg["type"] == "pause":
+            total += seg["duration"]
+        elif seg["type"] == "audio":
+            try:
+                info = sf.info(seg["path"])
+                total += info.duration
+            except Exception:
+                try:
+                    import librosa
+
+                    total += librosa.get_duration(path=seg["path"])
+                except Exception:
+                    total += 5.0  # fallback estimate
+
+    return max(total, 1.0)
 
 
 class Pipeline:
@@ -141,7 +170,7 @@ class Pipeline:
                 pass
             self.video_engine = None
 
-    def run(self, animation_prompt=None, verbose=False, script_text=None):
+    def run(self, animation_prompt=None, script_text=None):
         """
         Run the full pipeline: TTS → Video.
 
@@ -173,10 +202,7 @@ class Pipeline:
         # -----------------------------------------------------------------
         # Pre-flight: download any missing model files
         # -----------------------------------------------------------------
-        if not verbose:
-            model_manager.preflight_downloads(console=console)
-        else:
-            model_manager.preflight_downloads()
+        model_manager.preflight_downloads(console=console)
 
         # -----------------------------------------------------------------
         # Validate inputs
@@ -188,7 +214,13 @@ class Pipeline:
         # -----------------------------------------------------------------
         est_audio_dur = _estimate_audio_duration_from_script(script_text)
         est_video_secs = _estimate_video_eta(est_audio_dur)
-        est_tts_secs = 30 + count_tts_chunks(script_text) * 8  # ~30s load + ~8s/chunk
+        # Only text segments require TTS generation (~8s each);
+        # audio file refs are near-instant (just file loading)
+        _segments = _split_script_to_segments(script_text)
+        _text_chunks = sum(1 for s in _segments if s["type"] == "text")
+        est_tts_secs = (
+            (30 + _text_chunks * 8) if _text_chunks > 0 else 1
+        )  # ~30s load + ~8s/text chunk; ~instant if only audio refs
         est_video_load_secs = 60
         est_total = (
             est_tts_secs + est_video_load_secs + est_video_secs
@@ -229,27 +261,23 @@ class Pipeline:
             self.tts_engine = TTSEngine()
             num_chunks = count_tts_chunks(script_text)
 
-            if verbose:
-                self.tts_engine.load_model()
-                audio_path = self.tts_engine.generate(
-                    text=script_text,
-                    voice_ref_path=voice_ref,
-                    output_path=audio_output,
-                )
-            else:
-                with _make_progress(console) as progress:
+            with _make_progress(console) as progress:
+                if _text_chunks > 0:
                     load_task = progress.add_task("Loading TTS model", total=None)
                     self.tts_engine.load_model()
                     progress.update(load_task, total=1, completed=1)
 
-                    gen_task = progress.add_task("Generating audio", total=num_chunks)
+                audio_label = (
+                    "Generating audio" if _text_chunks > 0 else "Assembling audio"
+                )
+                gen_task = progress.add_task(audio_label, total=num_chunks)
 
-                    audio_path = self.tts_engine.generate(
-                        text=script_text,
-                        voice_ref_path=voice_ref,
-                        output_path=audio_output,
-                        progress_callback=lambda: progress.advance(gen_task),
-                    )
+                audio_path = self.tts_engine.generate(
+                    text=script_text,
+                    voice_ref_path=voice_ref,
+                    output_path=audio_output,
+                    progress_callback=lambda: progress.advance(gen_task),
+                )
 
         except torch.cuda.OutOfMemoryError:
             self._cleanup()
@@ -280,58 +308,47 @@ class Pipeline:
         try:
             self.video_engine = VideoEngine()
 
-            if verbose:
-                self.video_engine.load_model()
+            with _make_progress(console) as progress:
+                load_task = progress.add_task("Loading video model", total=6)
+
+                def _load_progress(step, total, desc):
+                    progress.update(
+                        load_task,
+                        completed=step,
+                        total=total,
+                    )
+
+                self.video_engine.load_model(progress_callback=_load_progress)
+                progress.update(
+                    load_task,
+                    completed=6,
+                    total=6,
+                    description="Loading video model",
+                )
+
                 audio_duration = self.video_engine.get_audio_duration(audio_path)
                 total_steps = self.video_engine.estimate_total_steps(audio_duration)
+
+                # Refined ETA now that we know actual audio duration
+                refined_video_eta = _estimate_video_eta(audio_duration)
+                est_video_secs = refined_video_eta  # update for final comparison
+                logger.info(
+                    f"Video ETA (refined): ~{_fmt(refined_video_eta)} "
+                    f"({total_steps} steps × ~{int(refined_video_eta / max(total_steps, 1))}s/step)"
+                )
+
+                gen_task = progress.add_task("Generating video", total=total_steps)
+
                 video_path = self.video_engine.generate(
                     image_path=image,
                     audio_path=audio_path,
                     output_path=video_output,
                     animation_prompt=animation_prompt,
+                    step_callback=lambda: progress.advance(gen_task),
                 )
-            else:
-                with _make_progress(console) as progress:
-                    load_task = progress.add_task("Loading video model", total=6)
 
-                    def _load_progress(step, total, desc):
-                        progress.update(
-                            load_task,
-                            completed=step,
-                            total=total,
-                        )
-
-                    self.video_engine.load_model(progress_callback=_load_progress)
-                    progress.update(
-                        load_task,
-                        completed=6,
-                        total=6,
-                        description="Loading video model",
-                    )
-
-                    audio_duration = self.video_engine.get_audio_duration(audio_path)
-                    total_steps = self.video_engine.estimate_total_steps(audio_duration)
-
-                    # Refined ETA now that we know actual audio duration
-                    refined_video_eta = _estimate_video_eta(audio_duration)
-                    est_video_secs = refined_video_eta  # update for final comparison
-                    logger.info(
-                        f"Video ETA (refined): ~{_fmt(refined_video_eta)} "
-                        f"({total_steps} steps × ~{int(refined_video_eta / max(total_steps, 1))}s/step)"
-                    )
-
-                    gen_task = progress.add_task("Generating video", total=total_steps)
-
-                    video_path = self.video_engine.generate(
-                        image_path=image,
-                        audio_path=audio_path,
-                        output_path=video_output,
-                        animation_prompt=animation_prompt,
-                        step_callback=lambda: progress.advance(gen_task),
-                    )
-
-                    # Ensure bar completes even if estimate was slightly off
-                    progress.update(gen_task, completed=total_steps)
+                # Ensure bar completes even if estimate was slightly off
+                progress.update(gen_task, completed=total_steps)
 
         except torch.cuda.OutOfMemoryError:
             self._cleanup()

@@ -397,7 +397,6 @@ Ported from [city96/ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) (Apach
 | `--audio-cfg SCALE`   | Audio guidance scale                              | 1.0                            |
 | `--blocks-to-swap N`  | DiT blocks to swap CPU↔GPU (0-40)                 | auto-tune                      |
 | `--prefetch-blocks N` | Async prefetch N blocks ahead                     | 1                              |
-| `--verbose`           | Debug logging to console                          |                                |
 
 ---
 

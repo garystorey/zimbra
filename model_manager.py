@@ -23,7 +23,11 @@ from rich.progress import (
 )
 from rich.console import Console
 
+import logging
+
 import config
+
+logger = logging.getLogger(__name__)
 
 
 _console = None
@@ -38,11 +42,6 @@ def _get_console():
         _stderr = getattr(config, "_REAL_STDERR", sys.stderr)
         _console = Console(file=_stderr)
     return _console
-
-
-def _is_verbose():
-    """True when --verbose is active."""
-    return getattr(config, "_VERBOSE", False)
 
 
 # ---------------------------------------------------------------------------
@@ -126,12 +125,10 @@ def _hf_snapshot_download(
             os.path.isfile(os.path.join(local_dir, f)) for f in marker_files
         )
         if all_present:
-            if _is_verbose():
-                _get_console().print(f"  [green]Already downloaded:[/green] {repo_id}")
+            logger.info("Already downloaded: %s", repo_id)
             return local_dir
     elif os.path.isdir(local_dir) and any(os.scandir(local_dir)):
-        if _is_verbose():
-            _get_console().print(f"  [green]Already downloaded:[/green] {repo_id}")
+        logger.info("Already downloaded: %s", repo_id)
         return local_dir
 
     if desc:
@@ -187,8 +184,7 @@ def ensure_infinitetalk_models():
         - All files (small repo)
         - model.safetensors from PR branch
     """
-    if _is_verbose():
-        _get_console().print("\n[bold]Checking InfiniteTalk models...[/bold]")
+    logger.info("Checking InfiniteTalk models...")
 
     os.makedirs(config.INFINITETALK_MODELS_DIR, exist_ok=True)
 
@@ -238,17 +234,13 @@ def ensure_infinitetalk_models():
                 local_dir=config.WAV2VEC_DIR,
             )
         else:
-            if _is_verbose():
-                _get_console().print(
-                    "  [green]Already downloaded:[/green] wav2vec2 model.safetensors"
-                )
+            logger.info("Already downloaded: wav2vec2 model.safetensors")
     except Exception as e:
         _get_console().print(
             f"  [yellow]Warning: Could not download wav2vec2 model.safetensors: {e}[/yellow]"
         )
 
-    if _is_verbose():
-        _get_console().print("[green]InfiniteTalk models: OK[/green]")
+    logger.info("InfiniteTalk models: OK")
     return {
         "wan_ckpt_dir": config.WAN_CKPT_DIR,
         "wav2vec_dir": config.WAV2VEC_DIR,
@@ -289,10 +281,7 @@ def ensure_gguf_models():
             )
             raise
     else:
-        if _is_verbose():
-            _get_console().print(
-                f"  [green]Already downloaded:[/green] {config.GGUF_BASE_FILENAME}"
-            )
+        logger.info("Already downloaded: %s", config.GGUF_BASE_FILENAME)
 
     # 2. InfiniteTalk Single Q8 adapter GGUF
     adapter_path = config.GGUF_ADAPTER_PATH
@@ -327,13 +316,9 @@ def ensure_gguf_models():
             )
             raise
     else:
-        if _is_verbose():
-            _get_console().print(
-                f"  [green]Already downloaded:[/green] {config.GGUF_ADAPTER_FILENAME}"
-            )
+        logger.info("Already downloaded: %s", config.GGUF_ADAPTER_FILENAME)
 
-    if _is_verbose():
-        _get_console().print("[green]GGUF models: OK[/green]")
+    logger.info("GGUF models: OK")
 
 
 def ensure_lora_models():
@@ -345,8 +330,7 @@ def ensure_lora_models():
     """
     lora_path = config.LIGHTX2V_LORA_PATH
     if os.path.isfile(lora_path):
-        if _is_verbose():
-            _get_console().print(f"  [green]Already downloaded:[/green] LightX2V LoRA")
+        logger.info("Already downloaded: LightX2V LoRA")
         return lora_path
 
     _get_console().print(
@@ -385,8 +369,7 @@ def ensure_chatterbox_models():
     Chatterbox uses `from_pretrained()` which handles its own HuggingFace
     download internally. We just verify the cache or trigger the download.
     """
-    if _is_verbose():
-        _get_console().print("\n[bold]Checking Chatterbox models...[/bold]")
+    logger.info("Checking Chatterbox models...")
 
     # Chatterbox handles its own download via from_pretrained().
     # We check if the HF cache already has the model to avoid
@@ -399,23 +382,13 @@ def ensure_chatterbox_models():
             repo.repo_id == config.CHATTERBOX_HF_REPO for repo in cache_info.repos
         )
         if chatterbox_cached:
-            if _is_verbose():
-                _get_console().print(
-                    "  [green]Already cached:[/green] Chatterbox Turbo"
-                )
+            logger.info("Already cached: Chatterbox Turbo")
         else:
-            if _is_verbose():
-                _get_console().print(
-                    "  [yellow]Chatterbox weights will be downloaded on first TTS call[/yellow]"
-                )
+            logger.info("Chatterbox weights will be downloaded on first TTS call")
     except Exception:
-        if _is_verbose():
-            _get_console().print(
-                "  [yellow]Chatterbox weights will be downloaded on first TTS call[/yellow]"
-            )
+        logger.info("Chatterbox weights will be downloaded on first TTS call")
 
-    if _is_verbose():
-        _get_console().print("[green]Chatterbox models: OK[/green]")
+    logger.info("Chatterbox models: OK")
 
 
 # ---------------------------------------------------------------------------
@@ -641,5 +614,4 @@ def ensure_all_models():
     ensure_gguf_models()
     ensure_lora_models()
     ensure_chatterbox_models()
-    if _is_verbose():
-        _get_console().print("\n[bold green]All models ready.[/bold green]")
+    logger.info("All models ready.")

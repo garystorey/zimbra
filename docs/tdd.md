@@ -423,18 +423,14 @@ stateDiagram-v2
 flowchart TD
     A[logging.debug/info/warning] --> B{Root Logger<br/>Level: DEBUG}
     B --> C[File Handler<br/>Level: DEBUG<br/>output/*.log]
-    B --> D{--verbose?}
-    D -->|Yes| E[Console Handler<br/>Level: DEBUG<br/>stderr]
-    D -->|No| F[No console output]
+    B --> D[No console logging handler]
 
-    G[Vendor print/tqdm] --> H{--verbose?}
-    H -->|Yes| I[Normal stdout/stderr]
-    H -->|No| J[Redirected to devnull]
+    G[Vendor print/tqdm] --> J[Redirected to devnull]
 
     K[Rich Progress Bars] --> L[Real stderr<br/>config._REAL_STDERR]
 ```
 
-**Key design decision:** Root logger is ALWAYS DEBUG. Console handler controls visibility. This ensures `logging.debug()` calls always reach the file handler for post-run diagnosis.
+**Key design decision:** Root logger is ALWAYS DEBUG. All debug/info messages go to the log file. Console shows only Rich progress bars — no logging handler is attached to the console. This ensures full diagnostic detail in the log file while keeping the UI clean.
 
 ---
 

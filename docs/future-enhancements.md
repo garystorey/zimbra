@@ -44,7 +44,6 @@ Create a simple local web UI that exposes the CLI parameters in a browser form, 
   - Animation prompt (text input)
   - Audio guidance scale (slider, 1.0–2.0)
   - Audio-only / Video-only toggle
-  - Verbose checkbox
 - "Generate" button calls `pipeline.run()` or shells out to `generate.py`
 - Real-time progress display (stream Rich output or poll a status file)
 - Output preview: play audio, show video + contact sheet inline
