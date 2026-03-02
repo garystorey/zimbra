@@ -334,12 +334,14 @@ Ported from [city96/ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) (Apach
 - **Model**: `ChatterboxTurboTTS.from_pretrained(device="cuda", token=True)` — HF auth required
 - **Voice ref**: Must be >5 seconds. Auto-converted from MP3 to WAV if needed.
 - **Text normalization**: `normalize_text()` replaces Unicode smart quotes/dashes with ASCII, strips all `"` (quotes cause phantom pauses and truncation in Chatterbox)
-- **Line-based splitting**: `_split_script_to_segments()` splits script by lines. Each line = one logical unit. `[pause:N]` tags become explicit silence segments.
+- **`--text` CLI option**: Pass script text directly instead of reading from `inputs/scripts/default.txt`. Priority: `--text` > file.
+- **`[s:N]` pause tags**: Insert N seconds of silence (e.g. `[s:1.5]`, `[s:.5]`)
+- **`${filename}` audio references**: Splice pre-recorded audio files from `inputs/scripts/` into the output (e.g. `${intro.mp3}`). Files are loaded and resampled to 24kHz.
+- **Line-based splitting**: `_split_script_to_segments()` splits script by lines. Each line = one logical unit. `[s:N]` tags become explicit silence segments. `${filename}` tags become audio file splice segments.
 - **Sub-sentence splitting**: Within each line, `split_into_sentences()` splits at `.!?` boundaries. Each sub-sentence is a separate TTS call. This prevents Chatterbox from inserting phantom pauses or truncating multi-sentence lines.
 - **Gaps**: 200ms silence between lines, 100ms between sub-sentences within a line
 - **Silence trimming**: `trim_silence()` trims leading (50ms margin) and trailing (200ms margin) silence from each chunk at -40dB threshold
 - **Output**: 24 kHz mono WAV, padded 0.25s front + 0.5s end
-- **`[pause:N]` tags**: Insert N seconds of silence
 - **Seed control**: `torch.manual_seed(config.VIDEO_SEED + chunk_counter)` for deterministic but unique output per chunk
 
 ### 10.3 Video Engine (`video_engine.py`)
@@ -387,6 +389,7 @@ Ported from [city96/ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) (Apach
 
 | Flag                  | Description                                       | Default                        |
 | --------------------- | ------------------------------------------------- | ------------------------------ |
+| `--text STRING`       | Script text for TTS (instead of default.txt)      |                                |
 | `--audio-only`        | Generate audio only (skip video)                  |                                |
 | `--video-only AUDIO`  | Generate video from existing audio file           |                                |
 | `--animation TEXT`    | Animation description (text or path to .txt file) | `inputs/animation/default.txt` |

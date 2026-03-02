@@ -142,11 +142,13 @@ flowchart TD
     C --> D{Segment type?}
     D -->|text| E[split_into_sentences at .!? boundaries]
     D -->|pause| F[Generate silence array]
+    D -->|audio| F2["Load & resample audio file to 24kHz"]
     E --> G[generate_chunk per sub-sentence]
     G --> G2[trim_silence on each chunk]
     G2 --> H[Join sub-sentences with 100ms gap]
     H --> I[Join lines with 200ms gap]
     F --> I
+    F2 --> I
     I --> J[Pad: 0.25s front + 0.5s end]
     J --> K[Save WAV at 24 kHz]
 ```
@@ -156,6 +158,9 @@ flowchart TD
 - **Model**: `ChatterboxTurboTTS.from_pretrained(device="cuda")`
 - **Voice ref**: Must be >5 seconds. Converted to WAV if MP3.
 - **Text normalization**: Smart quotes → ASCII `"` → stripped. Em/en dashes → `-`. Prevents phantom pauses and truncation in Chatterbox.
+- **`--text` CLI option**: Pass script text directly instead of reading from `inputs/scripts/default.txt`. Priority: `--text` > file.
+- **`[s:N]` pause tags**: Insert N seconds of silence (supports `[s:1.5]`, `[s:.5]`, etc.)
+- **`${filename}` audio references**: Splice pre-recorded audio files from `inputs/scripts/` into the output. Files are loaded and resampled to 24kHz.
 - **Two-level splitting**: Lines → sub-sentences. Each sub-sentence is a separate TTS call. 100ms gap within lines, 200ms between lines.
 - **Silence trimming**: Leading (50ms margin) and trailing (200ms margin) trimmed at -40dB threshold per chunk.
 - **Sampling**: `temperature=0.6`, `top_k=40`, `top_p=0.8`, `repetition_penalty=1.2`. Temperature <0.5 causes looping.

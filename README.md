@@ -9,7 +9,9 @@ Generate talking-head videos from a text script, voice reference, and portrait i
 ## Features
 
 - **Voice cloning** — Clone any voice from a ~10s reference clip
-- **Pause tags** — Insert `[pause:1.5]` in scripts to add precise silence (any duration in seconds)
+- **Pause tags** — Insert `[s:1.5]` in scripts to add precise silence (any duration in seconds)
+- **Inline audio splicing** — Insert `${filename.mp3}` in scripts to splice pre-recorded audio files
+- **`--text` CLI option** — Pass script text directly on the command line instead of using a file
 - **Any art style** — Photorealistic, cartoon, 3D, illustrated portraits all work
 - **Arbitrary aspect ratios** — Follows input image dimensions (not locked to square)
 - **Streaming mode** — Generate unlimited-length video in overlapping chunks
@@ -55,6 +57,9 @@ python generate.py
 # Full pipeline (TTS + video)
 python generate.py
 
+# Full pipeline with inline text
+python generate.py --text "Hello everyone. [s:1] I am Gary."
+
 # TTS only (skip video)
 python generate.py --audio-only
 
@@ -64,15 +69,16 @@ python generate.py --video-only output/run_20250216.wav
 
 ### Options
 
-| Flag                  | Description                                       |
-| --------------------- | ------------------------------------------------- |
-| `--audio-only`        | Generate audio only (skip video)                  |
-| `--video-only AUDIO`  | Generate video from existing audio file           |
-| `--animation TEXT`    | Animation description (text or path to .txt file) |
-| `--filename NAME`     | Base filename for all outputs (auto-increments)   |
-| `--verbose`           | Debug logging                                     |
-| `--blocks-to-swap N`  | DiT blocks to swap CPU↔GPU (default: auto-tune)   |
-| `--prefetch-blocks N` | Async prefetch N blocks ahead (default: 1)        |
+| Flag                  | Description                                                   |
+| --------------------- | ------------------------------------------------------------- |
+| `--text STRING`       | Script text for TTS (instead of `inputs/scripts/default.txt`) |
+| `--audio-only`        | Generate audio only (skip video)                              |
+| `--video-only AUDIO`  | Generate video from existing audio file                       |
+| `--animation TEXT`    | Animation description (text or path to .txt file)             |
+| `--filename NAME`     | Base filename for all outputs (auto-increments)               |
+| `--verbose`           | Debug logging                                                 |
+| `--blocks-to-swap N`  | DiT blocks to swap CPU↔GPU (default: auto-tune)               |
+| `--prefetch-blocks N` | Async prefetch N blocks ahead (default: 1)                    |
 
 Run `python generate.py --help` for full details.
 
@@ -115,7 +121,7 @@ zimbra/
 
 ## How It Works
 
-1. **TTS** — Chatterbox Turbo loads (~4 GB VRAM), generates voice-cloned audio from script text. Long text is chunked at sentence boundaries and crossfade-stitched.
+1. **TTS** — Chatterbox Turbo loads (~4 GB VRAM), generates voice-cloned audio from script text (via `--text` or `inputs/scripts/default.txt`). Long text is chunked at sentence boundaries and crossfade-stitched. `[s:N]` tags insert silence; `${filename}` tags splice in pre-recorded audio files from `inputs/scripts/`.
 2. **Unload** — TTS model fully unloaded, GPU memory freed to ~0 GB.
 3. **Video** — InfiniteTalk loads with GGUF quantization (Q4_0 base + Q8 adapter, ~12.8 GB). VAE/CLIP/T5 offloaded to CPU. Block-level swapping keeps 22 blocks on GPU and swaps 18 blocks with async CUDA stream prefetch. VAE runs in bfloat16 for faster encode/decode. Generates talking-head video driven by wav2vec2 audio embeddings.
 4. **Mux** — FFmpeg combines video with audio into final MP4.

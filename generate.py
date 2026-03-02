@@ -5,6 +5,7 @@ Usage:
     python generate.py              Full pipeline (TTS + video)
     python generate.py --audio-only  Generate audio only
     python generate.py --video-only path/to/audio.wav   Video from existing audio
+    python generate.py --text "Hello everyone. [s:1] I am Gary"
     python generate.py --verbose    Debug logging
 
 Inputs are read from the inputs/ folder:
@@ -76,6 +77,18 @@ def build_parser():
             "Animation description for the video model. "
             "Can be a text string or path to a .txt file. "
             "Defaults to inputs/animation/default.txt"
+        ),
+    )
+    parser.add_argument(
+        "--text",
+        type=str,
+        default=None,
+        metavar="STRING",
+        help=(
+            "Script text to use for TTS instead of reading from "
+            "inputs/scripts/default.txt. Accepts the same format "
+            "including [s:N] pause tags and ${filename} audio file "
+            "references (resolved from inputs/scripts/)."
         ),
     )
     parser.add_argument(
@@ -292,6 +305,10 @@ def main():
 
     # --video-only: skip TTS, go straight to video
     if args.video_only is not None:
+        if args.text is not None:
+            console.print(
+                "[yellow]WARNING: --text is ignored in --video-only mode (TTS is skipped).[/yellow]"
+            )
         import utils
         import time as _time
         import model_manager
@@ -413,7 +430,7 @@ def main():
         # Pre-flight: download any missing model files
         model_manager.preflight_downloads(console=console)
 
-        script_text = utils.validate_script()
+        script_text = utils.validate_script(text=args.text)
         voice_ref = config.DEFAULT_VOICE_REF
         num_chunks = count_tts_chunks(script_text)
         est_secs = 30 + num_chunks * 8
@@ -471,7 +488,11 @@ def main():
     pipeline = Pipeline()
 
     try:
-        result = pipeline.run(animation_prompt=animation_prompt, verbose=args.verbose)
+        result = pipeline.run(
+            animation_prompt=animation_prompt,
+            verbose=args.verbose,
+            script_text=args.text,
+        )
         return 0
 
     except KeyboardInterrupt:

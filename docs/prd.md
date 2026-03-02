@@ -25,12 +25,12 @@ Content creators, developers, and hobbyists who need talking-head video generati
 
 ### 2.1 Input Requirements
 
-| Input                | Format                                  | Required    | Default                                                   |
-| -------------------- | --------------------------------------- | ----------- | --------------------------------------------------------- |
-| **Script text**      | Plain text file (.txt) or inline string | Yes         | `inputs/scripts/default.txt`                              |
-| **Portrait image**   | PNG, JPG, JPEG, BMP, or WebP            | Yes         | `inputs/images/default.png`                               |
-| **Voice reference**  | WAV or MP3 (>5 seconds)                 | Recommended | `inputs/voice_ref/default.mp3` (built-in voice if absent) |
-| **Animation prompt** | Plain text file (.txt) or inline string | No          | `inputs/animation/default.txt`                            |
+| Input                | Format                                                     | Required    | Default                                                   |
+| -------------------- | ---------------------------------------------------------- | ----------- | --------------------------------------------------------- |
+| **Script text**      | Plain text file (.txt), inline string, or `--text` CLI arg | Yes         | `inputs/scripts/default.txt`                              |
+| **Portrait image**   | PNG, JPG, JPEG, BMP, or WebP                               | Yes         | `inputs/images/default.png`                               |
+| **Voice reference**  | WAV or MP3 (>5 seconds)                                    | Recommended | `inputs/voice_ref/default.mp3` (built-in voice if absent) |
+| **Animation prompt** | Plain text file (.txt) or inline string                    | No          | `inputs/animation/default.txt`                            |
 
 ### 2.2 Output Requirements
 
@@ -46,7 +46,9 @@ Content creators, developers, and hobbyists who need talking-head video generati
 #### FR-1: Text-to-Speech Generation
 
 - Clone voice from a reference audio clip (>5 seconds)
-- Support `[pause:N]` tags for inserting silence of N seconds
+- Support `[s:N]` tags for inserting silence of N seconds (e.g. `[s:1.5]`, `[s:.5]`)
+- Support `${filename}` tags for splicing pre-recorded audio files from `inputs/scripts/` (e.g. `${intro.mp3}`)
+- Support `--text "..."` CLI option to pass script text directly instead of reading from file
 - Two-level text splitting: lines → sub-sentences (at `.!?` boundaries). Each sub-sentence is a separate TTS call to prevent phantom pauses and truncation.
 - Quote stripping: all `"` characters removed before TTS (both ASCII and smart quotes). Quotes are never spoken and cause Chatterbox to malfunction.
 - Controlled gaps: 200ms between lines, 100ms between sub-sentences within a line
@@ -182,6 +184,7 @@ flowchart TD
 | Mode              | Command                                       | Description               |
 | ----------------- | --------------------------------------------- | ------------------------- |
 | **Full pipeline** | `generate.bat`                                | TTS → Video → MP4         |
+| **Inline text**   | `generate.bat --text "Hello. [s:1] World."`   | TTS from CLI string       |
 | **Audio only**    | `generate.bat --audio-only`                   | TTS only, skip video      |
 | **Video only**    | `generate.bat --video-only path/to/audio.wav` | Video from existing audio |
 
@@ -189,7 +192,9 @@ flowchart TD
 
 | Flag                  | Type        | Default                        | Description                                               |
 | --------------------- | ----------- | ------------------------------ | --------------------------------------------------------- |
+| `--text STRING`       | string      |                                | Script text for TTS (instead of default.txt)              |
 | `--animation TEXT`    | string/file | `inputs/animation/default.txt` | Animation style description                               |
+| `--filename NAME`     | string      | `run_YYYYMMDD_HHMMSS`          | Base filename for all outputs (auto-increments)           |
 | `--audio-cfg SCALE`   | float       | 1.0                            | Audio guidance scale (2.0 = stronger lip sync, 2× slower) |
 | `--blocks-to-swap N`  | int         | auto-tune                      | DiT blocks to swap CPU↔GPU (0-40)                         |
 | `--prefetch-blocks N` | int         | 1                              | Async prefetch blocks ahead                               |

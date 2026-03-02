@@ -8,6 +8,10 @@ models/
 
 # Generated outputs
 output/
+inputs/animation/
+inputs/scripts/
+inputs/voice_ref/
+inputs/images/
 
 # Vendored repos (cloned at install)
 vendor/

@@ -141,7 +141,7 @@ class Pipeline:
                 pass
             self.video_engine = None
 
-    def run(self, animation_prompt=None, verbose=False):
+    def run(self, animation_prompt=None, verbose=False, script_text=None):
         """
         Run the full pipeline: TTS → Video.
 
@@ -181,7 +181,7 @@ class Pipeline:
         # -----------------------------------------------------------------
         # Validate inputs
         # -----------------------------------------------------------------
-        script_text = utils.validate_script()
+        script_text = utils.validate_script(text=script_text)
 
         # -----------------------------------------------------------------
         # ETA estimate (before any model loading)

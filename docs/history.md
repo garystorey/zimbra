@@ -201,6 +201,26 @@ Simplified output management by flattening the directory structure and adding us
 
 **Files modified:** `config.py`, `generate.py`, `pipeline.py`, `tts_engine.py`, `video_engine.py`, `utils.py`, `.gitignore`, `README.md`, all docs.
 
+### Phase 18: `--text` CLI Option + `${filename}` Audio Splicing
+
+Added two new features to the TTS pipeline for more flexible script input:
+
+1. **`--text` CLI option** — Pass script text directly on the command line instead of reading from `inputs/scripts/default.txt`. Takes priority over the default file. Ignored with a warning when combined with `--video-only` (which skips TTS).
+
+2. **`${filename}` audio file references** — Script text (via `--text` or `default.txt`) can now reference pre-recorded audio files using `${filename}` syntax (e.g. `${intro.mp3}`). Files are resolved from `inputs/scripts/`, loaded, resampled to 24kHz to match TTS output, and spliced into the final audio at the position they appear. A `FileNotFoundError` is raised if the referenced file doesn't exist.
+
+3. **`[s:.5]` pause tag fix** — The `_PAUSE_RE` regex previously required a leading digit (`\d+`), so `[s:.5]` was not recognized and was passed as literal text to the TTS engine (spoken as ".5"). Fixed regex to accept `\.\d+` as an alternative pattern.
+
+**Implementation details:**
+
+- New `_AUDIO_REF_RE` regex pattern for `${filename}` matching
+- `split_into_segments()` now uses a combined regex to parse `[s:N]` and `${filename}` in a single pass, preserving ordering
+- New `_load_audio_file()` helper loads audio via soundfile (WAV) or librosa (MP3/other) and resamples to 24kHz
+- `count_tts_chunks()` updated to include audio file segments in the progress count
+- `progress_callback()` fires after each audio file is loaded, so progress bars advance correctly
+
+Files modified: `generate.py`, `pipeline.py`, `tts_engine.py`
+
 ---
 
 ## Windows Compatibility Discoveries

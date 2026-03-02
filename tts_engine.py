@@ -32,8 +32,11 @@ CROSSFADE_SECONDS = 0.05  # 50ms overlap
 # Pause tag parsing
 # ---------------------------------------------------------------------------
 
-# Matches [s:1.5], [s:2], [s:0.5], etc.
-_PAUSE_RE = re.compile(r"\[s:(\d+(?:\.\d+)?)\]", re.IGNORECASE)
+# Matches [s:1.5], [s:2], [s:0.5], [s:.5], etc.
+_PAUSE_RE = re.compile(r"\[s:(\d+(?:\.\d+)?|\.\d+)\]", re.IGNORECASE)
+
+# Matches ${filename.mp3}, ${filename.wav}, etc.
+_AUDIO_REF_RE = re.compile(r"\$\{([^}]+)\}")
 
 # Unicode → ASCII replacements that confuse TTS tokenizers
 _UNICODE_REPLACEMENTS = {
@@ -76,21 +79,10 @@ def _split_script_to_segments(text):
         line = line.strip()
         if not line:
             continue
-        # Extract [s:N] tag if present
-        pause_match = _PAUSE_RE.search(line)
-        # Get the text portion (everything except the pause tag)
-        if pause_match:
-            text_part = (
-                line[: pause_match.start()] + line[pause_match.end() :]
-            ).strip()
-        else:
-            text_part = line
-        # Add the text segment
-        if text_part:
-            segments.append({"type": "text", "value": text_part})
-        # Add the pause segment
-        if pause_match:
-            segments.append({"type": "pause", "duration": float(pause_match.group(1))})
+        # Use inline-aware splitting to handle multiple [s:N] tags
+        # and preserve their position within the line
+        line_segments = split_into_segments(line)
+        segments.extend(line_segments)
     return segments
 
 
@@ -120,31 +112,50 @@ def trim_silence(audio, sr=24000, threshold_db=-42, tail_ms=200, lead_ms=100):
 
 def split_into_segments(text):
     """
-    Split text into segments of speech and pauses.
+    Split text into segments of speech, pauses, and audio file references.
 
     Recognizes [s:N] tags where N is seconds (int or float).
+    Recognizes ${filename} tags referencing audio files in inputs/scripts/.
     Returns a list of dicts:
         {'type': 'text', 'value': 'Hello world.'}
         {'type': 'pause', 'duration': 1.5}
+        {'type': 'audio', 'path': '/absolute/path/to/file.mp3'}
     """
+    # Combine both patterns into one pass so ordering is preserved
+    _COMBINED_RE = re.compile(
+        r"(?:" + _PAUSE_RE.pattern + r")" r"|(?:" + _AUDIO_REF_RE.pattern + r")",
+        re.IGNORECASE,
+    )
     segments = []
     last_end = 0
 
-    for match in _PAUSE_RE.finditer(text):
-        # Text before this pause tag
+    for match in _COMBINED_RE.finditer(text):
+        # Text before this tag
         before = text[last_end : match.start()].strip()
         if before:
             segments.append({"type": "text", "value": before})
-        # The pause itself
-        segments.append({"type": "pause", "duration": float(match.group(1))})
+
+        if match.group(1) is not None:
+            # Pause tag — group(1) is the duration from [s:N]
+            segments.append({"type": "pause", "duration": float(match.group(1))})
+        else:
+            # Audio file reference — group(2) is the filename from ${filename}
+            filename = match.group(2).strip()
+            audio_path = os.path.join(config.SCRIPTS_DIR, filename)
+            if not os.path.isfile(audio_path):
+                raise FileNotFoundError(
+                    f"Audio file referenced in script not found: {audio_path}"
+                )
+            segments.append({"type": "audio", "path": audio_path})
+
         last_end = match.end()
 
-    # Remaining text after last pause tag
+    # Remaining text after last tag
     remaining = text[last_end:].strip()
     if remaining:
         segments.append({"type": "text", "value": remaining})
 
-    # If no pause tags found, return whole text as single segment
+    # If no tags found, return whole text as single segment
     if not segments:
         segments.append({"type": "text", "value": text.strip()})
 
@@ -230,14 +241,40 @@ def _split_for_fallback(text):
     return [text]
 
 
-def count_tts_chunks(text):
-    """Count the number of TTS chunks that generate() will produce.
+def _load_audio_file(path, target_sr=SAMPLE_RATE):
+    """Load an audio file and resample to the target sample rate.
 
-    Accounts for [s:N] tags — only text segments are counted.
-    Each line = one TTS call.
+    Supports WAV, MP3, and other formats via soundfile/librosa.
+    Returns a 1D float32 numpy array at target_sr.
+    """
+    try:
+        data, sr = sf.read(path, dtype="float32")
+    except Exception:
+        import librosa
+
+        data, sr = librosa.load(path, sr=None, mono=True)
+
+    # Convert stereo to mono
+    if data.ndim > 1:
+        data = data.mean(axis=1)
+
+    # Resample if needed
+    if sr != target_sr:
+        import librosa
+
+        data = librosa.resample(data, orig_sr=sr, target_sr=target_sr)
+
+    return data.astype(np.float32)
+
+
+def count_tts_chunks(text):
+    """Count the number of actionable chunks that generate() will produce.
+
+    Counts text segments (TTS calls) and audio file references.
+    Pauses are not counted as they are instantaneous.
     """
     segments = _split_script_to_segments(text)
-    return sum(1 for s in segments if s["type"] == "text")
+    return sum(1 for s in segments if s["type"] in ("text", "audio"))
 
 
 # ---------------------------------------------------------------------------
@@ -548,16 +585,26 @@ class TTSEngine:
 
         # Split script into segments using line-based boundaries.
         # Each line = one TTS call. [s:N] tags become explicit silence.
+        # ${filename} tags splice in pre-recorded audio files.
         segments = _split_script_to_segments(text)
         has_pauses = any(s["type"] == "pause" for s in segments)
+        has_audio_refs = any(s["type"] == "audio" for s in segments)
         text_segments = [s for s in segments if s["type"] == "text"]
+        audio_segments = [s for s in segments if s["type"] == "audio"]
         total_text_chunks = len(text_segments)
-        if has_pauses:
-            pause_total = sum(s["duration"] for s in segments if s["type"] == "pause")
+        if has_pauses or has_audio_refs:
+            parts = [f"{total_text_chunks} speech"]
+            if has_pauses:
+                pause_total = sum(
+                    s["duration"] for s in segments if s["type"] == "pause"
+                )
+                parts.append(
+                    f"{sum(1 for s in segments if s['type'] == 'pause')} pause = {pause_total:.1f}s silence"
+                )
+            if has_audio_refs:
+                parts.append(f"{len(audio_segments)} audio file(s)")
             logger.info(
-                f"Text split into {len(segments)} segment(s) "
-                f"({total_text_chunks} speech, "
-                f"{len(segments) - total_text_chunks} pause = {pause_total:.1f}s silence)"
+                f"Text split into {len(segments)} segment(s) ({', '.join(parts)})"
             )
         else:
             logger.info(
@@ -580,6 +627,21 @@ class TTSEngine:
                 silence = np.zeros(int(seg["duration"] * SAMPLE_RATE), dtype=np.float32)
                 output_parts.append(silence)
                 logger.info(f"  Inserted {seg['duration']:.1f}s pause")
+            elif seg["type"] == "audio":
+                audio_data = _load_audio_file(seg["path"])
+                duration = len(audio_data) / SAMPLE_RATE
+                output_parts.append(audio_data)
+                logger.info(
+                    f"  Inserted audio file: {os.path.basename(seg['path'])} "
+                    f"({duration:.1f}s)"
+                )
+                # Insert controlled gap after audio file (same as text segments)
+                if seg_idx < len(segments) - 1:
+                    next_seg = segments[seg_idx + 1]
+                    if next_seg["type"] not in ("pause", "audio"):
+                        output_parts.append(sentence_gap)
+                if progress_callback is not None:
+                    progress_callback()
             else:
                 line_text = seg["value"]
                 chunk_counter += 1
