@@ -95,12 +95,12 @@ Content creators, developers, and hobbyists who need talking-head video generati
 
 ### 3.1 Performance
 
-| Metric                    | Target                       | Measured         |
-| ------------------------- | ---------------------------- | ---------------- |
-| TTS generation            | <20s for ~30-word script     | ~5-18s           |
-| Video generation          | ≤1.5 min per second of audio | **1.06 min/sec** |
-| Total pipeline (8s video) | <15 min                      | 10.5 min         |
-| ETA accuracy              | <5% error                    | ~1% error        |
+| Metric                    | Target                       | Measured      |
+| ------------------------- | ---------------------------- | ------------- |
+| TTS generation            | <20s for ~30-word script     | ~5-18s        |
+| Video generation          | ≤1.5 min per second of audio | ~1.46 min/sec |
+| Total pipeline (8s video) | <15 min                      | ~14 min       |
+| ETA accuracy              | <5% error                    | ~1% error     |
 
 ### 3.2 Hardware Requirements
 
@@ -121,7 +121,7 @@ Content creators, developers, and hobbyists who need talking-head video generati
 ### 3.4 Usability
 
 - Sensible defaults for all parameters — `generate.bat` with zero arguments produces output
-- Rich progress bars for all operations (clean UI, full debug detail in log file)
+- Rich progress bars for all pipeline stages including post-generation (saving video, unloading model, contact sheet generation)
 - Clear error messages with suggested fixes
 
 ---
@@ -228,12 +228,12 @@ flowchart TD
 
 ## 9. Success Criteria
 
-| Criterion                                                                 | Target | Status        |
-| ------------------------------------------------------------------------- | ------ | ------------- |
-| Fresh install from git clone works without manual steps (beyond HF login) | Pass   | ✅            |
-| First-run model download completes with progress indication               | Pass   | ✅            |
-| 8s video generates in <15 min on RTX 4090 Laptop                          | Pass   | ✅ (10.5 min) |
-| Output video has consistent face/color across chunks                      | Pass   | ✅            |
-| Lip sync is visually acceptable                                           | Pass   | ✅            |
-| GPU OOM handled gracefully (not a crash)                                  | Pass   | ✅            |
-| Ctrl+C cleanly unloads models                                             | Pass   | ✅            |
+| Criterion                                                                 | Target | Status       |
+| ------------------------------------------------------------------------- | ------ | ------------ |
+| Fresh install from git clone works without manual steps (beyond HF login) | Pass   | ✅           |
+| First-run model download completes with progress indication               | Pass   | ✅           |
+| 8s video generates in <15 min on RTX 4090 Laptop                          | Pass   | ✅ (~14 min) |
+| Output video has consistent face/color across chunks                      | Pass   | ✅           |
+| Lip sync is visually acceptable                                           | Pass   | ✅           |
+| GPU OOM handled gracefully (not a crash)                                  | Pass   | ✅           |
+| Ctrl+C cleanly unloads models                                             | Pass   | ✅           |

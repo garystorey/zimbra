@@ -163,7 +163,7 @@ flowchart TD
 - **`${filename}` audio references**: Splice pre-recorded audio files from `inputs/scripts/` into the output. Files are loaded and resampled to 24kHz.
 - **Two-level splitting**: Lines → sub-sentences. Each sub-sentence is a separate TTS call. 100ms gap within lines, 200ms between lines.
 - **Silence trimming**: Leading (50ms margin) and trailing (200ms margin) trimmed at -40dB threshold per chunk.
-- **Sampling**: `temperature=0.6`, `top_k=40`, `top_p=0.8`, `repetition_penalty=1.2`. Temperature <0.5 causes looping.
+- **Sampling**: `temperature=0.7`, `top_k=150`, `top_p=0.92`, `repetition_penalty=1.2`. Temperature <0.5 causes looping.
 - **Output**: 24 kHz mono WAV
 
 ### 3.2 Video Engine (`video_engine.py`)
@@ -285,15 +285,15 @@ x_t = (sigma_t/sigma_s × exp(-h)) × x_s
 ```mermaid
 flowchart TD
     A[Audio: 8.2s → 206 frames] --> B[Chunk 1: frames 0-80]
-    B --> C[Denoise 4 steps]
-    C --> D[Save motion latent frames 72-80]
+    B --> C[Denoise 6 steps]
+    C --> D[Save motion latent frames 68-80]
     D --> E[Offload DiT blocks]
     E --> F[VAE decode → pixels]
     F --> G[Offload VAE, restore DiT blocks]
-    G --> H[Chunk 2: frames 72-152]
-    H --> I[Inject motion latent as frames 0-8]
-    I --> J[Denoise 4 steps]
-    J --> K[Save motion latent frames 72-80]
+    G --> H[Chunk 2: frames 68-148]
+    H --> I[Inject motion latent as frames 0-12]
+    I --> J[Denoise 6 steps]
+    J --> K[Save motion latent frames 68-80]
     K --> L[Continue until all audio covered]
 
     style D fill:#ff9,stroke:#333
@@ -303,8 +303,8 @@ flowchart TD
 **Key parameters:**
 
 - `frame_num=81` — frames per chunk (4n+1)
-- `motion_frame=9` — overlap frames between chunks
-- New frames per chunk: 81 - 9 = 72 (2.88s at 25 FPS)
+- `motion_frame=13` — overlap frames between chunks (0.52s)
+- New frames per chunk: 81 - 13 = 68 (2.72s at 25 FPS)
 - Direct latent passthrough (no VAE round-trip between chunks)
 
 ---

@@ -124,11 +124,9 @@ VIDEO_SECS_PER_STEP = 34  # ~34s/pass at 1-pass (audio_cfg=1.0), ~36s/pass at 2-
 VIDEO_GGUF_FRAME_NUM = (
     81  # 4n+1, matches ComfyUI frame_window=81. Fewer chunks = better quality.
 )
-VIDEO_GGUF_MOTION_FRAME = 9  # Reduced from 25. motion_frame=25 froze 43% of frames (audio-unresponsive) and created too many chunks for long videos. 9 = 0.36s overlap, sufficient with direct latent passthrough.
-VIDEO_GGUF_LORA_SAMPLE_STEPS = (
-    4  # LightX2V designed for 4 steps; saves 33% denoising vs 6
-)
-VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE = 1.0  # 1.0 = 1 pass/step (skip CFG). Works with I2V rank-64 LoRA. Previous failure (Phase 15b) was with wrong T2V rank-32 LoRA. CLI --audio-cfg 2.0 for stronger lip sync at 2x render time.
+VIDEO_GGUF_MOTION_FRAME = 13  # Increased from 9 for better chunk-to-chunk consistency. 13 = 0.52s overlap (matches non-GGUF default). motion_frame=25 froze 43% of frames; 13 is a good balance between quality and chunk count.
+VIDEO_GGUF_LORA_SAMPLE_STEPS = 6  # 6 steps for better quality. LightX2V supports 4-6; 4 was too soft/blurry. 6 matches non-GGUF LoRA default.
+VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE = 1.0  # 1.0 = 1 pass/step (skip CFG). Keeps render time within benchmarks. CLI --audio-cfg 2.0 for stronger lip sync at 2x render time.
 VIDEO_GGUF_SECS_PER_STEP = 34  # Measured ~33.7s/pass at 1-pass, ~35.8s at 2-pass. I2V rank-64 LoRA, 22+18 swapped (run_20260221_223335)
 VIDEO_GGUF_ACTIVATION_RESERVE = 8.5  # GiB — 81-frame activations need more headroom than 41-frame. Auto-tunes to ~22 persistent + ~18 swapped.
 

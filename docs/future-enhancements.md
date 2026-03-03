@@ -61,7 +61,7 @@ Create a simple local web UI that exposes the CLI parameters in a browser form, 
 
 | Improvement          | Expected Impact                                       | Blocker                                         |
 | -------------------- | ----------------------------------------------------- | ----------------------------------------------- |
-| **3-step denoising** | 25% faster denoising                                  | Quality validation needed                       |
+| **4-step denoising** | 33% faster denoising (vs current 6-step default)      | Quality validation needed                       |
 | **SageAttention**    | Faster attention computation                          | No Windows-compatible wheels for torch 2.4.x    |
 | **Batched CFG**      | ~25-35% per-step speedup                              | Audio batch dim doubles as `human_num` in model |
 | **FusioniX LoRA**    | Alternative 8-step LoRA (different quality tradeoffs) | Testing needed                                  |

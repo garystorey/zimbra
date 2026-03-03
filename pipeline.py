@@ -339,16 +339,26 @@ class Pipeline:
 
                 gen_task = progress.add_task("Generating video", total=total_steps)
 
+                save_task = None
+
+                def _on_save():
+                    nonlocal save_task
+                    progress.update(gen_task, completed=total_steps)
+                    save_task = progress.add_task("Saving video", total=None)
+
                 video_path = self.video_engine.generate(
                     image_path=image,
                     audio_path=audio_path,
                     output_path=video_output,
                     animation_prompt=animation_prompt,
                     step_callback=lambda: progress.advance(gen_task),
+                    save_callback=_on_save,
                 )
 
-                # Ensure bar completes even if estimate was slightly off
+                # Ensure bars complete
                 progress.update(gen_task, completed=total_steps)
+                if save_task is not None:
+                    progress.update(save_task, total=1, completed=1)
 
         except torch.cuda.OutOfMemoryError:
             self._cleanup()
@@ -367,14 +377,18 @@ class Pipeline:
             f"diff {timings['video'] - (est_video_load_secs + est_video_secs):+.1f}s"
         )
 
-        # Unload video model
-        self.video_engine.unload_model()
-        self.video_engine = None
+        # -----------------------------------------------------------------
+        # Post-generation: unload model + contact sheet (with progress)
+        # -----------------------------------------------------------------
+        with _make_progress(console) as progress:
+            unload_task = progress.add_task("Unloading model", total=None)
+            self.video_engine.unload_model()
+            self.video_engine = None
+            progress.update(unload_task, total=1, completed=1)
 
-        # -----------------------------------------------------------------
-        # Contact sheet (for quality review)
-        # -----------------------------------------------------------------
-        contact_sheet = utils.generate_contact_sheet(video_path)
+            sheet_task = progress.add_task("Generating contact sheet", total=None)
+            contact_sheet = utils.generate_contact_sheet(video_path)
+            progress.update(sheet_task, total=1, completed=1)
 
         # -----------------------------------------------------------------
         # Summary

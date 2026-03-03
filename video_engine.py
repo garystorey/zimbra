@@ -402,6 +402,7 @@ class VideoEngine:
         seed=None,
         animation_prompt=None,
         step_callback=None,
+        save_callback=None,
     ):
         """
         Generate a talking-head video from a portrait image and audio file.
@@ -417,6 +418,9 @@ class VideoEngine:
             seed: Random seed for reproducibility.
             animation_prompt: Text describing the animation style. Falls back
                 to _PROMPT if None.
+            save_callback: Optional callable invoked when inference is done and
+                FFmpeg muxing begins. Used by the pipeline to show a progress
+                indicator during the save phase.
 
         Returns:
             Path to the generated MP4 video file.
@@ -651,6 +655,8 @@ class VideoEngine:
             logger.info(f"Inference completed in {gen_elapsed:.1f}s")
 
         # --- Save video with audio ---
+        if save_callback is not None:
+            save_callback()
         _ensure_vendor_path()
         from wan.utils.multitalk_utils import save_video_ffmpeg
 

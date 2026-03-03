@@ -281,10 +281,32 @@ LoRA: lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16
 - audio_cfg=1.0 ✓
 - Block swap with async prefetch ✓
 
-**Where we differ:**
+**Where we differ (at Phase 15):**
 
 - `steps=4` (not 6) — LightX2V designed for 4; saves 33% denoising time
 - `motion_frame=9` (not 25) — 25 froze 43% of frames; 9 = 12% frozen, better lip sync
+
+_Note: Phase 19 later changed steps to 6 and motion_frame to 13. See Phase 19 below._
+
+### Phase 19: Quality Tuning + Post-Generation Progress Bars
+
+Two improvements based on quality review and UX feedback:
+
+**Quality tuning:**
+
+- **`VIDEO_GGUF_LORA_SAMPLE_STEPS` 4→6** — 4 steps produced soft/blurry frames. 6 matches the non-GGUF LoRA default and ComfyUI reference. LightX2V supports 4-6; 6 gives noticeably sharper output. ~50% more denoising time but stays within ≤1.5 min/sec benchmark (~1.46 min/sec).
+- **`VIDEO_GGUF_MOTION_FRAME` 9→13** — Increased overlap from 0.36s to 0.52s for better chunk-to-chunk consistency. Matches non-GGUF default. Minimal impact on chunk count.
+- **`audio_cfg` kept at 1.0** — Increasing to 2.0 would double per-step time (2 passes vs 1), breaking performance benchmarks. Available via `--audio-cfg 2.0` CLI override.
+
+**Post-generation progress bars:**
+
+After "Generating video" completed at 100%, there was a ~2.5 minute gap with no UI feedback before "Done!" appeared. This gap covered FFmpeg muxing, model unloading, and contact sheet generation.
+
+- Added `save_callback` parameter to `video_engine.generate()` — fires when inference completes and FFmpeg mux begins
+- Pipeline now shows three new progress tasks: "Saving video" (FFmpeg mux), "Unloading model", "Generating contact sheet"
+- Same treatment applied to the `--video-only` path in `generate.py`
+
+Files modified: `config.py`, `video_engine.py`, `pipeline.py`, `generate.py`, all docs.
 
 ---
 

@@ -76,6 +76,7 @@ python generate.py --video-only output/run_20250216.wav
 | `--video-only AUDIO`  | Generate video from existing audio file                       |
 | `--animation TEXT`    | Animation description (text or path to .txt file)             |
 | `--filename NAME`     | Base filename for all outputs (auto-increments)               |
+| `--audio-cfg SCALE`   | Audio guidance scale (default: 1.0, 2.0 = stronger lip sync)  |
 | `--blocks-to-swap N`  | DiT blocks to swap CPU↔GPU (default: auto-tune)               |
 | `--prefetch-blocks N` | Async prefetch N blocks ahead (default: 1)                    |
 
@@ -129,11 +130,11 @@ zimbra/
 
 On RTX 4090 Laptop (16 GB VRAM):
 
-| Stage | Time             | Notes                                           |
-| ----- | ---------------- | ----------------------------------------------- |
-| TTS   | ~5-18s           | Chatterbox Turbo, depends on script length      |
-| Video | ~1.06 min/sec    | 4 steps (LoRA), GGUF Q4_0, 1-pass audio_cfg=1.0 |
-| Total | ~10.5 min / 8.2s | Measured on 8.2s video (521s inference)         |
+| Stage | Time           | Notes                                           |
+| ----- | -------------- | ----------------------------------------------- |
+| TTS   | ~5-18s         | Chatterbox Turbo, depends on script length      |
+| Video | ~1.46 min/sec  | 6 steps (LoRA), GGUF Q4_0, 1-pass audio_cfg=1.0 |
+| Total | ~14 min / 8.2s | Estimated for 8.2s video                        |
 
 Video length always matches audio length. Video resolution matches input image aspect ratio.
 
@@ -146,7 +147,7 @@ Video length always matches audio length. Video resolution matches input image a
    per-layer transfers. While block N computes on GPU, block N+1 prefetches from CPU via a
    dedicated CUDA stream. Auto-tuned: 22/40 blocks on GPU, 18 blocks swap (16 GB VRAM).
 
-3. **LightX2V I2V rank-64 distilled LoRA** — Reduces denoising from 20 steps to 4 steps. LoRA patches
+3. **LightX2V I2V rank-64 distilled LoRA** — Reduces denoising from 20 steps to 6 steps. LoRA patches
    applied as buffers during GGUF dequantization forward pass.
 
 4. **VAE bfloat16** — VAE encode/decode run in bfloat16 for ~2x faster throughput on tensor

@@ -21,7 +21,7 @@ Models run **sequentially** — TTS is fully unloaded (0 GB VRAM) before the vid
 | **TTS**              | [Chatterbox Turbo](https://github.com/resemble-ai/chatterbox) (350 M params)                                                                     | Instant voice cloning from ~10 s reference clip. Paralinguistic tags (`[laugh]`, `[cough]`). ~4 GB VRAM. 24 kHz output.             |
 | **Video**            | [InfiniteTalk](https://github.com/garystorey/InfiniteTalk) (Wan2.1-I2V-14B base, fork of [MeiGen-AI](https://github.com/MeiGen-AI/InfiniteTalk)) | Audio-driven (wav2vec2). Any art style (photo/cartoon/3D). Arbitrary aspect ratios. 480p/720p. Streaming mode for unlimited length. |
 | **Quantization**     | GGUF Q4_0 base + Q8 adapter (~12.8 GB)                                                                                                           | On-demand dequantization. Ported from city96/ComfyUI-GGUF (Apache 2.0). Matches ComfyUI workflow.                                   |
-| **LoRA Accelerator** | LightX2V I2V rank-64 distilled LoRA (738 MB)                                                                                                     | Reduces denoising from 20 steps to 4. Applied as patches during GGUF dequant forward — no dequant→merge→requant needed.             |
+| **LoRA Accelerator** | LightX2V I2V rank-64 distilled LoRA (738 MB)                                                                                                     | Reduces denoising from 20 steps to 6. Applied as patches during GGUF dequant forward — no dequant→merge→requant needed.             |
 | **Solver**           | DPM++ SDE (sde-dpmsolver++) 1st-order                                                                                                            | Stochastic noise prevents deterministic error accumulation across streaming chunks. Matches ComfyUI reference workflow.             |
 | **VRAM Management**  | Block-level swap with async CUDA stream prefetch (Kijai approach)                                                                                | Swap entire DiT blocks (~320 MB each GGUF). Async prefetch hides transfer latency behind compute. Auto-tuned based on free VRAM.    |
 | **CLI**              | Python `argparse`                                                                                                                                | Simplest interface. Easy to wrap in a UI later.                                                                                     |
@@ -117,7 +117,7 @@ All auto-download on first run via `huggingface_hub`. Pre-flight check downloads
 | chinese-wav2vec2-base     | `TencentGameMate/chinese-wav2vec2-base` | ~360 MB  | `snapshot_download()`         | Audio features. `model.safetensors` from `refs/pr/1` branch. |
 | GGUF base (Q4_0)          | `city96/Wan2.1-I2V-14B-480P-gguf`       | ~10.2 GB | `hf_hub_download()`           | DiT base model (quantized)                                   |
 | GGUF adapter (Q8)         | `Kijai/WanVideo_comfy_GGUF`             | ~2.65 GB | `hf_hub_download()`           | InfiniteTalk audio cross-attention adapter                   |
-| LightX2V I2V LoRA rank-64 | `Kijai/WanVideo_comfy`                  | ~738 MB  | `hf_hub_download()`           | I2V step distillation (20→4 steps)                           |
+| LightX2V I2V LoRA rank-64 | `Kijai/WanVideo_comfy`                  | ~738 MB  | `hf_hub_download()`           | I2V step distillation (20→6 steps)                           |
 
 **Total first-run download: ~20 GB**
 
@@ -179,9 +179,9 @@ All values in `config.py`. These are the **correct final values (Phase 15e)** �
 ```python
 VIDEO_QUANT = "gguf"
 VIDEO_GGUF_FRAME_NUM = 81                   # 4n+1, matches ComfyUI. Fewer chunks = better quality.
-VIDEO_GGUF_MOTION_FRAME = 9                 # 0.36s overlap. 12% frozen frames (vs 43% at 25).
-VIDEO_GGUF_LORA_SAMPLE_STEPS = 4            # LightX2V designed for 4 steps
-VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE = 1.0     # 1 pass/step (skip_cfg). Works with I2V rank-64 LoRA.
+VIDEO_GGUF_MOTION_FRAME = 13                # 0.52s overlap. Better chunk-to-chunk consistency.
+VIDEO_GGUF_LORA_SAMPLE_STEPS = 6            # 6 steps for better quality (LightX2V supports 4-6)
+VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE = 1.0     # 1 pass/step (skip_cfg). Keeps render time within benchmarks.
 VIDEO_GGUF_SECS_PER_STEP = 34              # ~34s/pass at 1-pass, ~36s at 2-pass
 VIDEO_GGUF_ACTIVATION_RESERVE = 8.5         # GiB — 81-frame activations need more headroom
 VIDEO_BLOCK_SIZE_BYTES = 320_000_000        # ~320 MB per DiT block in GGUF Q4_0+Q8
@@ -371,11 +371,11 @@ Ported from [city96/ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) (Apach
 | ------------------------------------- | ----------------------------------- |
 | Per-pass denoising                    | ~34s (I2V rank-64 LoRA, 22+18 swap) |
 | Per-step (1 pass, audio_cfg=1.0)      | ~34s                                |
-| Per-chunk denoising (4 steps)         | ~135s                               |
+| Per-chunk denoising (6 steps)         | ~204s                               |
 | Per-chunk overhead (VAE + gap)        | ~28s                                |
 | First-chunk extra (CLIP + VAE encode) | ~24s                                |
-| **8.2s video (measured)**             | **521s inference = ~1.06 min/sec**  |
-| Total pipeline (8.2s video)           | 632s = 10.5 min                     |
+| **8.2s video (estimated, 6 steps)**   | **~720s inference = ~1.46 min/sec** |
+| Total pipeline (8.2s video)           | ~14 min                             |
 | VRAM allocated                        | ~8.5 GB                             |
 | VRAM reserved                         | ~13.5 GB                            |
 | GPU temp                              | 67-68°C                             |
