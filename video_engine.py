@@ -631,7 +631,7 @@ class VideoEngine:
             seed=seed,
             offload_model=True,
             max_frames_num=effective_max,
-            color_correction_strength=0.3,  # Mild anchoring. 1.0 overcorrects in later chunks, flattening contrast and reducing lip movement visibility.
+            color_correction_strength=0.7,  # Chrominance-only anchoring (L channel skipped in vendor). Prevents purple drift across chunks without flattening contrast.
             extra_args=extra_args,
             pre_encoded_text=self._cached_text_embeddings,
             solver=solver,

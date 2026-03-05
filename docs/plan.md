@@ -197,7 +197,7 @@ VIDEO_USE_LORA = True                       # LightX2V I2V rank-64 LoRA
 VIDEO_NUM_DIT_BLOCKS = 40                   # InfiniteTalk has 40 DiT blocks
 VIDEO_PREFETCH_BLOCKS = 1                   # Async prefetch 1 block ahead
 GPU_THERMAL_THRESHOLD = 70                  # °C — pause between chunks if exceeded
-color_correction_strength = 0.3             # Mild anchoring to reference image
+color_correction_strength = 0.7             # L=mean-shift only, a/b=full transfer (preserves contrast)
 VIDEO_VAE_DECODE_SECS = 28                  # Per-chunk: VAE decode + block offload/restore
 VIDEO_FIRST_CHUNK_EXTRA_SECS = 24           # CLIP (~10s) + VAE encode (~8s) + setup (~6s)
 VIDEO_FPS = 25                              # InfiniteTalk output frame rate

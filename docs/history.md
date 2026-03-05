@@ -308,6 +308,26 @@ After "Generating video" completed at 100%, there was a ~2.5 minute gap with no 
 
 Files modified: `config.py`, `video_engine.py`, `pipeline.py`, `generate.py`, all docs.
 
+### Phase 20: Color Shift Fix
+
+Progressive purple/magenta color shift was visible across chunks in long videos (13 chunks / 34s). Root cause was twofold:
+
+1. **L channel correction flattened contrast** — The `match_and_blend_colors()` Lab color transfer was correcting all 3 channels (L, a, b). The L channel normalization flattened luminance contrast and reduced lip movement visibility, which led Phase 15e to reduce strength from 1.0 to 0.3.
+2. **0.3 strength too weak for chrominance** — At 0.3, the a/b channel correction was insufficient to prevent cumulative chrominance drift across 13 chunks.
+
+**Fixes applied (iteration 1 — chrominance only):**
+
+- Changed `match_and_blend_colors()` loop from `range(3)` (L, a, b) to `range(1, 3)` (a, b only). Fixed purple drift but introduced brightness drift at certain chunks because L channel was completely unanchored.
+- `color_correction_strength` 0.3→0.7.
+
+**Fixes applied (iteration 2 — L mean-only shift):**
+
+- **L channel: mean-only shift** — Replaced full mean+std transfer for L with a simple mean offset (`L += mean_ref - mean_src`). This anchors overall brightness to the reference image without compressing/expanding the luminance dynamic range (std scaling was the root cause of contrast flattening in Phase 15e).
+- **a, b channels: full mean+std transfer** — Unchanged from iteration 1. Strong chrominance anchoring prevents purple drift.
+- **`color_correction_strength` stays at 0.7** — Blends corrected frames with originals at 70%.
+
+Files modified: `vendor/infinitetalk/wan/utils/multitalk_utils.py`, `video_engine.py`, all docs.
+
 ---
 
 ## Key Architectural Decisions
