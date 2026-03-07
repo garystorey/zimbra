@@ -303,7 +303,7 @@ flowchart TD
 **Key parameters:**
 
 - `frame_num=81` — frames per chunk (4n+1)
-- `motion_frame=13` — overlap frames between chunks (0.52s)
+- `motion_frame=13` — overlap frames between chunks (0.52s), best lip sync for talking head
 - New frames per chunk: 81 - 13 = 68 (2.72s at 25 FPS)
 - Direct latent passthrough (no VAE round-trip between chunks)
 

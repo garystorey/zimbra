@@ -281,12 +281,10 @@ LoRA: lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16
 - audio_cfg=1.0 ✓
 - Block swap with async prefetch ✓
 
-**Where we differ (at Phase 15):**
+**Where we differ (current, Phase 22):**
 
-- `steps=4` (not 6) — LightX2V designed for 4; saves 33% denoising time
-- `motion_frame=9` (not 25) — 25 froze 43% of frames; 9 = 12% frozen, better lip sync
-
-_Note: Phase 19 later changed steps to 6 and motion_frame to 13. See Phase 19 below._
+- `motion_frame=9` (not 25) — 11% frozen frames for best lip sync (Phase 15b + 22). VAE re-encode from color-corrected frames prevents drift regardless of overlap size.
+- `color_correction_strength=0.5` — per-frame Lab correction anchored to reference image. L channel: mean-only shift. a/b channels: full mean+std transfer. Works with VAE re-encode to prevent cumulative drift.
 
 ### Phase 19: Quality Tuning + Post-Generation Progress Bars
 
@@ -327,6 +325,86 @@ Progressive purple/magenta color shift was visible across chunks in long videos 
 - **`color_correction_strength` stays at 0.7** — Blends corrected frames with originals at 70%.
 
 Files modified: `vendor/infinitetalk/wan/utils/multitalk_utils.py`, `video_engine.py`, all docs.
+
+### Phase 21: Long Video Quality Fix
+
+Quality degraded significantly in longer videos (32.5s / 12 chunks) compared to short ones (11.4s / 4 chunks), despite identical generation parameters. Root cause: two settings diverged from the ComfyUI reference workflow, and their negative effects compound across chunk transitions.
+
+**Problem analysis:**
+
+- **`color_correction_strength=0.7`** — Every frame of every chunk was processed through Lab color space conversion with 70% blending. Over 812 frames × 12 chunks, floating-point precision loss and per-frame modification accumulated, washing out fine detail. ComfyUI reference uses `colormatch=disabled` (0.0).
+- **`motion_frame=13`** (0.52s overlap) — Insufficient context passed between chunks for long videos. ComfyUI uses 25 (1.0s). Less overlap = more visible chunk seams and progressive quality loss.
+
+**Conservative fix attempted (iteration 1):**
+
+- `color_correction_strength` 0.7→0.2, `VIDEO_GGUF_MOTION_FRAME` 13→17
+- **Result:** Sharpness improved but color drift still clearly visible between chunks. The 0.2 correction was too weak to prevent purple drift, and 17-frame overlap (21%) didn't provide enough natural color anchoring.
+
+**Chunk-seam chrominance correction (iteration 3) — FAILED:**
+
+Compared overlap regions between consecutive chunks and applied constant chrominance offset. **Problem:** the motion latent passthrough carries uncorrected color forward (saved in latent space before VAE decode/correction). Each chunk's overlap comes from the uncorrected latent, but the reference tail was from corrected video. This created a growing feedback loop — drift values increased monotonically: chunk 1 R=+0.02, chunk 4 R=+0.07, chunk 8 R=+0.11.
+
+**Chunk-0 anchored chrominance correction (iteration 4) — PARTIAL:**
+
+Anchored all chunks to chunk 0's mean chrominance instead of chaining. Eliminated feedback loop. However, measured drift from the **entire** chunk mean (overlap + new frames). The 13 overlap frames come from the previous chunk's latent and are closer to chunk 0's color, diluting the measured drift by ~16%. Over 12 chunks this residual compounded visibly — video still got progressively whiter/more purple.
+
+**Chunk-0 anchored pixel correction, new-frames-only (iteration 5) — FAILED:**
+
+Measured drift from new frames only (excluding overlap that diluted measurement). Revealed the TRUE drift magnitude was massive (G drift reaching -0.29 by chunk 8). The correction fired and applied these large offsets, but the fundamental problem remained: **pixel-space correction can't prevent latent-space drift from compounding.** The motion latent (saved pre-VAE-decode) carries uncorrected drift forward. Each chunk's denoising builds on a more drifted latent, requiring ever-larger corrections that distort the image (clamping, dynamic range compression).
+
+**Chunk-0 anchored LATENT mean correction (iteration 6) — INSUFFICIENT:**
+
+Moved correction from pixel space to **latent space**, applied BEFORE saving the motion latent. Per-channel mean correction prevented runaway (drift stabilized at ~0.2 instead of growing unbounded) but the video still showed progressive whitening. Mean-only correction missed **variance drift** — if latent channel spread compresses, the decoded image loses contrast/saturation. Max drift values: 0.15→0.26 across 12 chunks.
+
+**Two-layer correction: latent mean+std + pixel Lab (iteration 7) — WORSE:**
+
+Combined latent mean+std affine normalization with pixel Lab correction at 0.3. Quality got **worse** than previous tests. Analysis: std ratios were 0.88–1.06 (variance barely drifts), so std normalization was unnecessary and distorted spatial patterns in the latent. Mean drift still grew 0.14→0.24 despite correction — the denoising process regenerates drift regardless of motion latent statistics. The combination of harmful latent distortion + pixel correction = worse output.
+
+**Key learning:** Latent-space corrections are fundamentally ineffective for this problem. The denoising process generates all 81 frames from scratch, using the motion latent only as a conditioning hint for the first 4 latent frames (19% of temporal dimension). The model's output statistics are determined by its internal biases, not the motion latent's mean/std. Correcting the motion latent cannot prevent per-chunk drift.
+
+**Pixel-only Lab correction at 0.5 (iteration 8) — STILL FAILING (root cause not yet fixed):**
+
+Removed all latent corrections, used `match_and_blend_colors` at strength=0.5. Still showed color drift. The corrections appeared to do nothing — because they weren't being applied to what mattered.
+
+**ROOT CAUSE FOUND (iteration 9):**
+
+The direct latent passthrough (`_saved_motion_latent`) was saving the raw denoised `x0` BEFORE any pixel correction ran. Every chunk's processing was:
+
+1. Denoise → `x0` (raw, drifted)
+2. **Save `_saved_motion_latent = x0[0][:, -4:]`** ← raw, uncorrected
+3. VAE decode → `videos`
+4. Pixel correction → `videos` corrected ✓ (output is fixed)
+5. `cond_frame = videos[:, :, -13:]` ← color-corrected overlap frames
+6. Next chunk: `if _saved_motion_latent is not None:` → ALWAYS TRUE → uses raw drifted latent; `cond_frame` NEVER used
+
+The pixel correction fixed the **output** but the next chunk's denoising was always conditioned on the **raw drifted latent**. All 8 previous correction attempts failed for this reason — none of them could fix the conditioning, only the output.
+
+**Fix:** Remove the direct latent passthrough save entirely. `_saved_motion_latent` stays `None` permanently, forcing the fallback path (`self.vae.encode(cond_frame)`) which encodes the **color-corrected** overlap frames as the motion latent for each subsequent chunk. The "cumulative VAE reconstruction error" argument from Phase 10 doesn't apply: each chunk re-encodes its own fresh output frames (not the same frames repeatedly), so there's no accumulation — only 1× encode-decode overhead per chunk boundary (~2s for 13 frames vs. 11s for 81 frames).
+
+**Final settings:** `motion_frame=13`, `color_correction_strength=0.5`, no direct latent passthrough — motion latent re-encoded from corrected pixels each chunk.
+
+Files modified: `config.py`, `video_engine.py`, `vendor/infinitetalk/wan/multitalk.py`, all docs.
+
+### Phase 22: Lip Sync Regression Fix
+
+test11 (first test with Phase 21 settings) showed two issues:
+
+1. **Video slows down / almost stops moving at points** — During audio pause segments (3.5s total: 0.5s + 1.0s + 1.0s + 1.0s), the model generates near-static frames (no audio signal = no motion driver). With `motion_frame=13`, the 13-frame motion latent freeze means recovery after a pause takes up to 0.52s even after speech resumes. Fundamental model behavior, partially mitigated by smaller motion_frame.
+
+2. **Lip sync regression** — Phase 15b empirically proved `motion_frame=9` = "only 12% frozen frames, much better lip sync." Phases 19 and 21 raised it to 13 for chunk consistency. With Phase 21's VAE re-encode from color-corrected frames, color drift is prevented independently of motion_frame size. The reason to keep the larger overlap no longer exists.
+
+**Fix:** `VIDEO_GGUF_MOTION_FRAME` 13 → 9.
+
+- Fewer frozen frames (11% vs 16%) → model responds faster to audio signal
+- Recovery after pause: 9 frames (0.36s) instead of 13 frames (0.52s)
+- Color drift prevention unchanged — VAE re-encode from corrected frames feeds correct color forward regardless of overlap size
+- Same chunk count for typical audio lengths (both yield 12 chunks for 32.5s)
+
+**"Slowing down" note:** The character going static during silence is expected model behavior — wav2vec2 embeddings for silence are near-flat, giving the model no motion signal. This is correct behavior (character should be quiet during pauses). Reducing motion_frame only reduces how long the freeze extends into the next chunk after silence ends.
+
+**Validation — test13:** Phase 22 settings confirmed working. test13 used identical parameters and audio to test12 (audio_cfg=1.0, motion_frame=9, steps=6, seed=42, dpmpp_sde) and produced visible, expressive animation with consistent color throughout. test12's "slow motion" appearance was a stochastic artifact — DPM++ SDE injects `torch.randn_like(latent)` noise at each of 72 denoising steps; `seed=42` only fixes the initial latent, so per-step SDE noise varies between runs due to CUDA non-determinism. test13 runtime: 2639.8s, GPU avg 63°C / max 64°C, no thermal pauses, ETA accuracy -2.6%.
+
+Files modified: `config.py`, all docs.
 
 ---
 

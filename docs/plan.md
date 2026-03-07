@@ -179,7 +179,7 @@ All values in `config.py`. These are the **correct final values (Phase 15e)** �
 ```python
 VIDEO_QUANT = "gguf"
 VIDEO_GGUF_FRAME_NUM = 81                   # 4n+1, matches ComfyUI. Fewer chunks = better quality.
-VIDEO_GGUF_MOTION_FRAME = 13                # 0.52s overlap. Better chunk-to-chunk consistency.
+VIDEO_GGUF_MOTION_FRAME = 9                 # 0.36s overlap, 11% frozen — best lip sync (Phase 15b + 22). VAE re-encode from corrected frames handles drift.
 VIDEO_GGUF_LORA_SAMPLE_STEPS = 6            # 6 steps for better quality (LightX2V supports 4-6)
 VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE = 1.0     # 1 pass/step (skip_cfg). Keeps render time within benchmarks.
 VIDEO_GGUF_SECS_PER_STEP = 34              # ~34s/pass at 1-pass, ~36s at 2-pass
@@ -197,7 +197,7 @@ VIDEO_USE_LORA = True                       # LightX2V I2V rank-64 LoRA
 VIDEO_NUM_DIT_BLOCKS = 40                   # InfiniteTalk has 40 DiT blocks
 VIDEO_PREFETCH_BLOCKS = 1                   # Async prefetch 1 block ahead
 GPU_THERMAL_THRESHOLD = 70                  # °C — pause between chunks if exceeded
-color_correction_strength = 0.7             # L=mean-shift only, a/b=full transfer (preserves contrast)
+color_correction_strength = 0.5             # per-frame Lab correction anchored to reference image. L channel: mean-only shift. a/b channels: full mean+std transfer. Feeds corrected overlap frames forward via VAE re-encode to prevent cumulative drift.
 VIDEO_VAE_DECODE_SECS = 28                  # Per-chunk: VAE decode + block offload/restore
 VIDEO_FIRST_CHUNK_EXTRA_SECS = 24           # CLIP (~10s) + VAE encode (~8s) + setup (~6s)
 VIDEO_FPS = 25                              # InfiniteTalk output frame rate

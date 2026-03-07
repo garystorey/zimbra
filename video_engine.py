@@ -631,7 +631,7 @@ class VideoEngine:
             seed=seed,
             offload_model=True,
             max_frames_num=effective_max,
-            color_correction_strength=0.7,  # Chrominance-only anchoring (L channel skipped in vendor). Prevents purple drift across chunks without flattening contrast.
+            color_correction_strength=0.5,  # Per-frame Lab correction anchored to input image. Latent corrections removed (iterations 6-7: denoising regenerates drift regardless, std normalization distorted spatial patterns). Previous: 0.7 (destructive), 0.3 (weak + latent combo worse), 0.2 (weak), 0.0 (no correction).
             extra_args=extra_args,
             pre_encoded_text=self._cached_text_embeddings,
             solver=solver,
