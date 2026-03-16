@@ -180,6 +180,9 @@ All values in `config.py`. These are the **correct final values (Phase 15e)** â€
 VIDEO_QUANT = "gguf"
 VIDEO_GGUF_FRAME_NUM = 81                   # 4n+1, matches ComfyUI. Fewer chunks = better quality.
 VIDEO_GGUF_MOTION_FRAME = 9                 # 0.36s overlap, 11% frozen â€” best lip sync (Phase 15b + 22). VAE re-encode from corrected frames handles drift.
+# Silence embedding suppression (Phase 23): _suppress_silence_embeddings() in video_engine.py
+# zeroes wav2vec2 frames where raw audio RMS < 1e-6 (pure digital silence from [s:N] tags,
+# TTS padding, inter-sentence gaps). Prevents slow micro-drift during pauses.
 VIDEO_GGUF_LORA_SAMPLE_STEPS = 6            # 6 steps for better quality (LightX2V supports 4-6)
 VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE = 1.0     # 1 pass/step (skip_cfg). Keeps render time within benchmarks.
 VIDEO_GGUF_SECS_PER_STEP = 34              # ~34s/pass at 1-pass, ~36s at 2-pass

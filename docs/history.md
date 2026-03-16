@@ -408,6 +408,18 @@ Files modified: `config.py`, all docs.
 
 ---
 
+## Phases 23–24: Silence Handling Attempts (BOTH REVERTED)
+
+**Phase 23 attempted:** Zeroed wav2vec2 embedding frames where raw audio RMS < 1e-6. Failed: librosa's 24kHz→16kHz sinc resampler creates low-energy boundary frames, causing 256/743 (34.5%) frames to be zeroed vs the expected ~143 (19.2%). The abrupt 0→full-signal embedding cliffs caused violent motion bursts during silence (run 44_04: "mouth super fast during silence, frozen→speeds up→slows down").
+
+**Phase 24 attempted:** Post-process rendered video — temporal mean-blend silence frames in pixel space. Reverted before testing at user request.
+
+**Lesson:** `arg_null_audio = zeros_like` is a CFG direction vector, not a trained silence signal. Silence embedding manipulation puts the model out-of-distribution. The slow idle drift during silence is correct trained behaviour and acceptable.
+
+**Current state: Phase 22 baseline.** No silence handling code in `video_engine.py`. Files modified: `video_engine.py`, all docs.
+
+---
+
 ## Key Architectural Decisions
 
 ### Sequential GPU Usage
