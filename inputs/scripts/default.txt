@@ -1,1 +1,11 @@
-[s:0.5] ${1.mp3} [s:1.5] ${2.mp3} [s:1.5] ${3.mp3} [s:1] ${like.mp3} [s:0.5]
+[s:.5] The doctor said, "Take this pill every day for the rest of your life." [s:1]
+I said, "But there are only four pills." [s:1]
+He said, "Exactly." 
+[s:2]
+I told my wife I was man enough to admit when I’m wrong. [s:1]
+She said, "You’re wrong."[s:1]
+I said, "I know." 
+[s:2]
+I told my suitcases there would be no vacation this year.[s:1.5]
+Now I’m dealing with emotional baggage. [s:1.5]
+Like and subscribe![s:1]

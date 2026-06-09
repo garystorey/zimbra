@@ -418,6 +418,176 @@ Files modified: `config.py`, all docs.
 
 **Current state: Phase 22 baseline.** No silence handling code in `video_engine.py`. Files modified: `video_engine.py`, all docs.
 
+### Phase 25: Gaussian Embedding Smoothing (REVERTED)
+
+**Attempted:** Applied a 1D Gaussian kernel (σ=6 frames, ≈0.24s) along the time axis of the wav2vec2 audio embedding tensor in `_get_audio_embedding()`. The intent was to bleed speech energy into adjacent silent frames so the model wouldn't freeze during pauses.
+
+**Why it failed:** A ±18-frame Gaussian window obliterates the 40ms phoneme-resolution that wav2vec2 captures. Rapid lip transitions (consonants, stop plosives) occur at 50–150ms intervals — the smoothing averaged them into slow blurred motion. User reported lip sync got worse, not better. The underlying lesson from Phases 23–24 still holds: manipulating the audio embedding outside its trained distribution degrades motion quality. The idle drift during silence is correct trained behaviour.
+
+**Reverted immediately.** `_smooth_audio_embedding()` and `VIDEO_AUDIO_EMB_SMOOTH_SIGMA` removed. Phase 22 baseline restored.
+
+Files modified: `video_engine.py`, `config.py`.
+
+### Phase 26: audio_cfg=2.0 (NO EFFECT on silence)
+
+**Attempted:** Raised `VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE` from 1.0 → 2.0, doubling denoising passes per step (1 → 2). The hypothesis: stronger audio guidance would amplify the small motion signal during silence.
+
+**Why it failed:** CFG formula is `null + scale*(cond - null)`. During silence, `cond ≈ 0` AND `arg_null_audio = zeros_like(cond) = 0`. Therefore: `0 + 2.0*(0 - 0) = 0`. Doubling a zero is still zero. audio_cfg cannot amplify a signal that doesn't exist. Render time was doubled (~1h 13m) with no perceptible improvement. User confirmed: "this change did not help."
+
+**Reverted:** `VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE` back to 1.0.
+
+Files modified: `config.py`.
+
+### Phase 27: Audio Noise Floor (REVERTED — normalization kills it)
+
+**Attempted:** Added Gaussian noise (amplitude 1e-3, ~-60 dBFS) to raw audio before wav2vec2 encoding only (output audio kept clean). Hypothesis: real recordings always have room tone, so digital zeros are out-of-distribution for wav2vec2.
+
+**Why it failed:** `Wav2Vec2FeatureExtractor` normalises the _entire utterance_ to zero mean and unit variance in one pass. Speech dominates ~83% of the 28.8s clip at ~0.15 RMS. A 1e-3 noise floor in silence is only 0.7% of speech amplitude. After global normalisation, silence frames are still effectively zero. User confirmed at the 20-second mark (1.0s pause after TTS speech): "animation slows down so much it's very noticeable." No improvement observed.
+
+**Reverted:** `VIDEO_AUDIO_NOISE_FLOOR` set to 0 (disabled). `_add_audio_noise_floor()` retained as dead code but not called.
+
+Files modified: `video_engine.py`, `config.py`.
+
+### Phase 28: Speech Echo Injection During Silence (SUCCESSFUL)
+
+**Rationale:** Instead of structureless noise (wrong spectrum, global normalization kills it), during silence frames add an 8% amplitude copy of the _nearest speech frame_ from the same audio array. This:
+
+- Is genuinely in-distribution for wav2vec2 — real speech waveforms, correct spectral shape
+- Produces "whisper-level" embeddings (~8% of speech amplitude, survives global normalization since it's 8% not 0.7%)
+- Drives subtle natural idle-speaking motion instead of freezing
+- Only ADDs to frames — never zeros, so no embedding cliffs (Phase 23's fatal flaw was zeroing)
+- Applied to embedding-extraction copy only; output audio track is clean
+
+**Silence detection:** Per-frame RMS over 10ms windows (160 samples at 16kHz), threshold 0.005. False positives (low-energy boundary frames from resampler) only get a tiny echo added — harmless, no cliff.
+
+**Settings:** `VIDEO_AUDIO_SILENCE_ECHO_GAIN = 0.08`. Set to 0 to disable.
+
+Files modified: `video_engine.py`, `config.py`.
+
+### Phase 29: Interpolated Silence Echo (IN PROGRESS)
+
+**Problem observed:** Even with Phase 28 enabled, long pauses could still look puppet-like because each silent 10ms frame copied a single nearest speech frame. In long silence windows this can create repeated hold-like patterns and visibly stiff transitions.
+
+**Change:** Updated `_fill_silence_with_speech_echo()` to blend the **previous and next** speech frames for each silent frame instead of nearest-frame copy.
+
+- Uses per-frame interpolation (`alpha`) between neighboring speech frames
+- Keeps conditioning in-distribution (still real speech waveforms)
+- Preserves the "add-only" safety property (no embedding zeroing cliffs)
+
+**Tuning:** Increased `VIDEO_AUDIO_SILENCE_ECHO_GAIN` from 0.08 → 0.12 so subtle idle-driving signal is less likely to collapse after global wav2vec2 normalization.
+
+**Expected effect:** Smoother idle motion through silence segments, fewer static hold poses, and stronger perceived animation continuity while preserving clean output audio.
+
+Files modified: `video_engine.py`, `config.py`.
+
+### Phase 30: Speech-Frame Embedding Gain (IN PROGRESS)
+
+**Problem observed:** Even with improved silence behavior, speech segments can still feel under-animated vs ComfyUI (mouth articulation too soft), especially when keeping `audio_cfg=1.0` for 1-pass/step runtime.
+
+**Change:** Added `_boost_speech_embedding_energy()` in `video_engine.py` and applied it after wav2vec2 extraction.
+
+- Detects voiced frames using RMS on video-aligned windows
+- Scales embedding vectors only on voiced frames (`gain=1.12`)
+- Leaves non-voiced frames untouched
+
+**Why this approach:** It increases speech-time conditioning energy without switching to multi-pass CFG (`audio_cfg=2.0`), so render time remains in the 1-pass path.
+
+**Settings:**
+
+- `VIDEO_AUDIO_SPEECH_EMB_GAIN = 1.12`
+- `VIDEO_AUDIO_SPEECH_RMS_THRESHOLD = 0.005`
+
+**Expected effect:** Better mouth-to-phoneme responsiveness and more expressive speech motion without 2x runtime.
+
+Files modified: `video_engine.py`, `config.py`.
+
+### Phase 31: Phoneme-Transition Sharpening (KEPT)
+
+**Problem observed:** Phase 30 raised embedding _magnitude_ on voiced frames, but uniform scaling does not sharpen the _edges_ between phonemes. Lip sync crispness — especially around consonants, stop plosives, and vowel transitions — depends on how abruptly the wav2vec2 trajectory changes frame-to-frame. A flat scale does not help transitions stand out.
+
+**Change:** Added `_sharpen_embedding_transitions()` in `video_engine.py`, applied after `_boost_speech_embedding_energy`. Implements a mild temporal unsharp-mask on voiced frames:
+
+```
+sharpened[t] = emb[t] + delta_gain * (emb[t] - ema[t-1])
+```
+
+where `ema` is an exponential moving average (alpha=0.35 ≈ ~3-frame effective baseline) tracking the original (pre-sharpen) embedding trajectory. The EMA baseline is updated from the _original_ `emb[t]` so the baseline does not chase our own amplified output.
+
+**Why this approach:**
+
+- Attacks a different axis than Phase 30 — transition crispness vs magnitude
+- Stays close to the real wav2vec2 trajectory (small perturbation, delta_gain=0.15)
+- No extra denoising pass — runtime unchanged
+- Only applied to voiced frames (reuses Phase 30's RMS detector) — avoids the Phase 23 silence-cliff problem
+- `delta_gain=0` disables cleanly
+
+**Settings:**
+
+- `VIDEO_AUDIO_SPEECH_DELTA_GAIN = 0.15`
+- `VIDEO_AUDIO_SPEECH_DELTA_EMA_ALPHA = 0.35`
+- Reuses `VIDEO_AUDIO_SPEECH_RMS_THRESHOLD = 0.005`
+
+**Expected effect:** Sharper mouth-to-phoneme alignment during speech, better perceived lip sync vs ComfyUI reference, no runtime impact.
+
+**A/B validation (run_20260420_1553 vs run_20260420_1612):** Both runs used identical audio (`inputs/scripts/1.mp3`, 10.3s, 257 embedding frames), image, seed=42, and `--video-only` mode to isolate the embedding change from TTS variability.
+
+| Run                | `delta_gain` | Runtime | Voiced frames sharpened |
+| ------------------ | ------------ | ------- | ----------------------- |
+| `phase31_sharpen`  | 0.15         | 16m 57s | 182/257                 |
+| `phase30_baseline` | 0.00         | 16m 47s | 0/257                   |
+
+- **Runtime neutral** (~10s noise, within normal variance) — confirms no extra denoising pass, as designed.
+- **Voicing detector deterministic** — both runs flagged the same 182/257 frames as voiced.
+- **Contact-sheet differences subtle** — expected for a mild perturbation; DPM++ SDE per-step stochastic noise dominates static-frame diffs. Video playback required to judge lip-sync crispness.
+
+**Decision: KEPT.** `VIDEO_AUDIO_SPEECH_DELTA_GAIN = 0.15` retained. To disable in future, set to 0.
+
+Files modified: `video_engine.py`, `config.py`.
+
+### Phase 32: Speech-Onset Boost (KEPT, TUNED)
+
+**Problem observed:** Even with Phase 30 (voiced-frame magnitude gain) and Phase 31 (transition sharpening), articulation right after pauses can still start soft for ~1 frame. This is visible at speech resumes (first phoneme after silence), where perceived lip pickup lags.
+
+**Change:** Extended `_boost_speech_embedding_energy()` in `video_engine.py` to add an optional onset-specific gain on the **first voiced frame after silence**.
+
+- Reuses the existing RMS voicing detector (`VIDEO_AUDIO_SPEECH_RMS_THRESHOLD`)
+- Applies normal voiced gain to all voiced frames (`VIDEO_AUDIO_SPEECH_EMB_GAIN`)
+- Applies additional multiplicative gain only on onset frames (`VIDEO_AUDIO_SPEECH_ONSET_GAIN`)
+- Keeps non-voiced frames untouched and adds no denoising passes
+
+**Why this approach:** It targets a specific weak point (post-pause articulation pickup) with a minimal, reversible conditioning tweak. Runtime remains unchanged because this is a pre-denoising embedding transform only.
+
+**Settings:**
+
+- `VIDEO_AUDIO_SPEECH_ONSET_GAIN = 1.10` (set to `1.0` to disable)
+- Existing settings unchanged: `VIDEO_AUDIO_SPEECH_EMB_GAIN = 1.12`, `VIDEO_AUDIO_SPEECH_DELTA_GAIN = 0.15`
+
+**Result:** Kept with conservative tuning. Onset boost improved post-pause articulation pickup, but `1.12` could occasionally over-accent a resume frame. Default was tuned to `1.10` to preserve faster mouth response while reducing overshoot risk.
+
+Files modified: `video_engine.py`, `config.py`.
+
+### Phase 33: Post-Speech Release Tail (KEPT, CONSERVATIVE)
+
+**Problem observed:** Speech-to-silence transitions could still look slightly abrupt in some clips. Even with silence echo and onset boost, motion energy could drop too quickly right after the last voiced frame, producing a mild puppet-like snap into stillness.
+
+**Change:** Extended `_boost_speech_embedding_energy()` in `video_engine.py` to optionally apply a short decaying gain on the first silent frames after voiced speech.
+
+- Reuses the same RMS voiced/silent detector used by Phases 30–32
+- On voiced frames: behavior unchanged (`VIDEO_AUDIO_SPEECH_EMB_GAIN`, optional onset boost)
+- On first silent frames after speech: applies a linear decay from `speech_release_gain` to `1.0` over `speech_release_frames`
+- No extra denoising passes; this remains a pre-denoising embedding transform
+
+**Why this approach:** It smooths release dynamics at phrase endings with a tiny, bounded adjustment rather than globally increasing silence motion. This targets transition continuity without flattening articulation or changing runtime.
+
+**Settings:**
+
+- `VIDEO_AUDIO_SPEECH_RELEASE_FRAMES = 2` (set `0` to disable)
+- `VIDEO_AUDIO_SPEECH_RELEASE_GAIN = 1.06` (set `1.0` to disable)
+
+**Result:** Kept with conservative defaults. The release tail is intentionally short (~80ms at 25fps) and mild, intended to reduce hard speech-stop transitions while preserving natural pause behavior.
+
+Files modified: `video_engine.py`, `config.py`.
+
 ---
 
 ## Key Architectural Decisions

@@ -403,7 +403,7 @@ def main():
         import time as _time
         import model_manager
         from pipeline import _make_progress, _fmt
-        from tts_engine import TTSEngine, count_tts_chunks
+        from tts_engine import TTSEngine, count_tts_chunks, _TTS_LOAD_STEPS
 
         # Pre-flight: download any missing model files
         model_manager.preflight_downloads(console=console)
@@ -425,9 +425,17 @@ def main():
             _ao_start = _time.time()
 
             with _make_progress(console) as progress:
-                load_task = progress.add_task("Loading TTS model", total=None)
-                engine.load_model()
-                progress.update(load_task, total=1, completed=1)
+                load_task = progress.add_task(
+                    "Loading TTS model", total=_TTS_LOAD_STEPS
+                )
+
+                def _tts_load_progress(step, total, desc):
+                    progress.update(load_task, completed=step, total=total)
+
+                engine.load_model(progress_callback=_tts_load_progress)
+                progress.update(
+                    load_task, completed=_TTS_LOAD_STEPS, total=_TTS_LOAD_STEPS
+                )
 
                 gen_task = progress.add_task("Generating audio", total=num_chunks)
 

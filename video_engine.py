@@ -76,6 +76,88 @@ def _prepare_audio(audio_path, sample_rate=16000):
     return speech_array
 
 
+def _fill_silence_with_speech_echo(
+    speech_array, echo_gain=0.08, threshold_rms=0.005, sr=16000
+):
+    """During silence, add a quiet in-distribution speech echo before wav2vec2 encoding.
+
+    Wav2Vec2FeatureExtractor normalises to unit variance globally, so structureless
+    noise at -60 dBFS is wiped out (Phase 27 failure). Using real speech waveforms at
+    8% amplitude (~8% of speech energy) survives global normalization and keeps
+    wav2vec2 in-distribution, producing natural idle-speaking embeddings during pauses.
+
+    Unlike Phase 23 (which zeroed embeddings and created violent cliffs), this function
+    only ADDS to frames — false-positive silence detections from resampler boundary
+    frames get a tiny harmless boost, not a catastrophic zero.
+
+    For each silent 10ms frame we blend the previous and next speech frames (when both
+    exist) instead of copying a single nearest frame. This avoids long repeated hold
+    poses during pauses and keeps idle motion transitions smoother.
+
+    Applied to the embedding-extraction copy only; output audio track is clean.
+
+    Args:
+        speech_array:  1-D float32 numpy array at `sr` Hz.
+        echo_gain:     Amplitude of echo relative to source speech (0.12 = 12%).
+        threshold_rms: Per-frame RMS below which a frame is treated as silence.
+        sr:            Sample rate (must match speech_array).
+
+    Returns:
+        New float32 array with speech echo added to silence sections.
+    """
+    if echo_gain <= 0:
+        return speech_array
+
+    frame_size = int(sr * 0.01)  # 10ms → 160 samples at 16kHz
+    n = len(speech_array)
+    n_frames = n // frame_size
+    if n_frames < 2:
+        return speech_array
+
+    rms = np.array(
+        [
+            np.sqrt(np.mean(speech_array[i * frame_size : (i + 1) * frame_size] ** 2))
+            for i in range(n_frames)
+        ],
+        dtype=np.float32,
+    )
+
+    speech_frame_indices = np.where(rms >= threshold_rms)[0]
+    if len(speech_frame_indices) == 0:
+        return speech_array  # Entirely silent — nothing to echo
+
+    # Frame views (10ms each) for faster per-frame mixing.
+    core_len = n_frames * frame_size
+    speech_frames = speech_array[:core_len].reshape(n_frames, frame_size)
+
+    result = speech_array.copy()
+    result_frames = result[:core_len].reshape(n_frames, frame_size)
+
+    silence_frame_indices = np.where(rms < threshold_rms)[0]
+    speech_count = len(speech_frame_indices)
+
+    for frame_idx in silence_frame_indices:
+        pos = np.searchsorted(speech_frame_indices, frame_idx)
+        prev_idx = speech_frame_indices[pos - 1] if pos > 0 else speech_frame_indices[0]
+        next_idx = (
+            speech_frame_indices[pos]
+            if pos < speech_count
+            else speech_frame_indices[speech_count - 1]
+        )
+
+        if prev_idx == next_idx:
+            echo_frame = speech_frames[prev_idx]
+        else:
+            alpha = (frame_idx - prev_idx) / float(next_idx - prev_idx)
+            echo_frame = (1.0 - alpha) * speech_frames[
+                prev_idx
+            ] + alpha * speech_frames[next_idx]
+
+        result_frames[frame_idx] += echo_frame * echo_gain
+
+    return result
+
+
 def _get_audio_embedding(
     speech_array, wav2vec_feature_extractor, audio_encoder, sr=16000, device="cpu"
 ):
@@ -102,6 +184,185 @@ def _get_audio_embedding(
     audio_emb = torch.stack(embeddings.hidden_states[1:], dim=1).squeeze(0)
     audio_emb = rearrange(audio_emb, "b s d -> s b d")
     audio_emb = audio_emb.cpu().detach()
+    return audio_emb
+
+
+def _boost_speech_embedding_energy(
+    audio_emb,
+    speech_array,
+    sr=16000,
+    fps=25,
+    threshold_rms=0.005,
+    speech_gain=1.12,
+    speech_onset_gain=1.0,
+    speech_release_frames=0,
+    speech_release_gain=1.0,
+):
+    """Boost embedding magnitude on voiced frames to improve mouth responsiveness.
+
+    This is a no-extra-pass alternative to raising audio_cfg. It keeps skip_cfg=1-pass
+    runtime while increasing speech-time motion energy by scaling wav2vec2 embeddings
+    only on frames that contain real speech energy. Optionally applies a mild
+    extra gain on speech-onset frames (first voiced frame after silence) so mouth
+    articulation starts faster after pauses.
+    """
+    if audio_emb is None or (
+        speech_gain <= 1.0
+        and speech_onset_gain <= 1.0
+        and (speech_release_frames <= 0 or speech_release_gain <= 1.0)
+    ):
+        return audio_emb
+
+    num_frames = int(audio_emb.shape[0])
+    if num_frames <= 0:
+        return audio_emb
+
+    samples_per_frame = max(int(sr / max(fps, 1)), 1)
+    voiced = np.zeros(num_frames, dtype=bool)
+    for i in range(num_frames):
+        start = i * samples_per_frame
+        if start >= len(speech_array):
+            break
+        end = min(start + samples_per_frame, len(speech_array))
+        frame = speech_array[start:end]
+        if frame.size == 0:
+            continue
+        rms = float(np.sqrt(np.mean(frame**2)))
+        voiced[i] = rms >= threshold_rms
+
+    boosted = 0
+    onset_boosted = 0
+    release_boosted = 0
+    release_frames = max(int(speech_release_frames), 0)
+    release_remaining = 0
+
+    for i in range(num_frames):
+        if not voiced[i]:
+            if (
+                release_remaining > 0
+                and release_frames > 0
+                and speech_release_gain > 1.0
+            ):
+                used = release_frames - release_remaining
+                decay = 1.0 - (used / float(release_frames))
+                gain = 1.0 + (speech_release_gain - 1.0) * decay
+                audio_emb[i] *= gain
+                release_boosted += 1
+                release_remaining -= 1
+            continue
+
+        gain = speech_gain
+        # Mild extra push when speech starts/resumes after silence.
+        if speech_onset_gain > 1.0 and (i == 0 or not voiced[i - 1]):
+            gain *= speech_onset_gain
+            onset_boosted += 1
+
+        audio_emb[i] *= gain
+        release_remaining = release_frames
+        boosted += 1
+
+    if boosted > 0:
+        logger.debug(
+            "Boosted speech embedding energy on %d/%d voiced frames (gain=%.2f, onset_gain=%.2f, onset_frames=%d, release_frames=%d, release_gain=%.2f, release_boosted=%d, threshold=%.4f)",
+            boosted,
+            num_frames,
+            speech_gain,
+            speech_onset_gain,
+            onset_boosted,
+            release_frames,
+            speech_release_gain,
+            release_boosted,
+            threshold_rms,
+        )
+
+    return audio_emb
+
+
+def _sharpen_embedding_transitions(
+    audio_emb,
+    speech_array,
+    sr=16000,
+    fps=25,
+    threshold_rms=0.005,
+    delta_gain=0.15,
+    ema_alpha=0.35,
+):
+    """Sharpen phoneme transitions by emphasizing inter-frame deltas on voiced frames.
+
+    Phase 31: Temporal high-pass enhancement. Lip sync crispness depends on how
+    cleanly the audio embedding signals phoneme *changes* (consonant onsets, stop
+    plosives, vowel transitions), not just signal magnitude. Phase 30 scales
+    embedding *magnitude* uniformly on voiced frames, which can help articulation
+    energy but does not sharpen the *edges* between phonemes.
+
+    This function keeps a running EMA of the embedding along the time axis and,
+    on voiced frames, adds `delta_gain * (emb[t] - ema_prev)` — i.e. it amplifies
+    the high-frequency component of the embedding trajectory relative to a
+    short smoothed baseline. Equivalent to a mild unsharp-mask in time:
+
+        sharpened[t] = emb[t] + delta_gain * (emb[t] - ema[t-1])
+
+    Properties:
+    - In-distribution: stays close to the real wav2vec2 trajectory; values remain
+      a small perturbation around the original embedding (delta_gain is small).
+    - No runtime cost: purely a CPU numpy-style pass before the diffusion loop.
+    - Safe-by-default: disabled when `delta_gain <= 0`.
+    - Never applied to non-voiced frames so it does not reintroduce the Phase 23
+      cliff problem during silence.
+
+    Args:
+        audio_emb:     Tensor of shape [num_frames, layers, hidden] (wav2vec2 stack).
+        speech_array:  Raw 1-D speech waveform for voicing detection.
+        sr:            Sample rate of speech_array.
+        fps:           Video frame rate used to align frames to audio windows.
+        threshold_rms: Voicing threshold on 40ms (1/fps s) windows.
+        delta_gain:    Gain on (emb - ema). Small values (0.1–0.25) keep in-distribution.
+        ema_alpha:     EMA smoothing factor. Larger = more reactive baseline
+                       (smaller sharpening effect); smaller = slower baseline
+                       (larger sharpening). 0.35 ≈ ~3-frame effective window.
+
+    Returns:
+        The modified `audio_emb` (in place) or the original if disabled.
+    """
+    if delta_gain <= 0 or audio_emb is None:
+        return audio_emb
+
+    num_frames = int(audio_emb.shape[0])
+    if num_frames <= 1:
+        return audio_emb
+
+    samples_per_frame = max(int(sr / max(fps, 1)), 1)
+    ema = audio_emb[0].clone()
+    sharpened = 0
+
+    for i in range(1, num_frames):
+        start = i * samples_per_frame
+        if start >= len(speech_array):
+            break
+        end = min(start + samples_per_frame, len(speech_array))
+        frame = speech_array[start:end]
+        if frame.size == 0:
+            ema = ema_alpha * audio_emb[i] + (1.0 - ema_alpha) * ema
+            continue
+
+        rms = float(np.sqrt(np.mean(frame**2)))
+        current = audio_emb[i].clone()
+        if rms >= threshold_rms:
+            audio_emb[i] = current + delta_gain * (current - ema)
+            sharpened += 1
+        # Update EMA from the ORIGINAL (pre-sharpen) trajectory so the baseline
+        # tracks the real wav2vec2 signal rather than our own amplified output.
+        ema = ema_alpha * current + (1.0 - ema_alpha) * ema
+
+    if sharpened > 0:
+        logger.debug(
+            "Sharpened embedding transitions on %d/%d voiced frames (delta_gain=%.2f, ema_alpha=%.2f)",
+            sharpened,
+            num_frames,
+            delta_gain,
+            ema_alpha,
+        )
+
     return audio_emb
 
 
@@ -480,19 +741,48 @@ class VideoEngine:
         logger.info(f"Preparing audio: {audio_path}")
         speech_array = _prepare_audio(audio_path, sample_rate=config.VIDEO_SAMPLE_RATE)
 
-        # Save normalized audio for embedding extraction (16kHz mono)
+        # Save normalized (clean) audio for video muxing — noise floor not applied here
         tmp_dir = tempfile.mkdtemp()
         sum_audio_path = os.path.join(tmp_dir, "sum_all.wav")
         sf.write(sum_audio_path, speech_array, config.VIDEO_SAMPLE_RATE)
 
+        # For wav2vec2 encoding only: inject quiet speech echo during silence so the
+        # model stays in-distribution and generates idle motion instead of freezing.
+        # Output audio track saved above is unaffected.
+        speech_for_emb = _fill_silence_with_speech_echo(
+            speech_array,
+            echo_gain=config.VIDEO_AUDIO_SILENCE_ECHO_GAIN,
+            sr=config.VIDEO_SAMPLE_RATE,
+        )
+
         # Extract audio embedding
         logger.info("Extracting wav2vec2 audio embedding...")
         audio_embedding = _get_audio_embedding(
-            speech_array,
+            speech_for_emb,
             self.wav2vec_feature_extractor,
             self.audio_encoder,
             sr=config.VIDEO_SAMPLE_RATE,
             device="cpu",
+        )
+        audio_embedding = _boost_speech_embedding_energy(
+            audio_embedding,
+            speech_array,
+            sr=config.VIDEO_SAMPLE_RATE,
+            fps=config.VIDEO_FPS,
+            threshold_rms=config.VIDEO_AUDIO_SPEECH_RMS_THRESHOLD,
+            speech_gain=config.VIDEO_AUDIO_SPEECH_EMB_GAIN,
+            speech_onset_gain=config.VIDEO_AUDIO_SPEECH_ONSET_GAIN,
+            speech_release_frames=config.VIDEO_AUDIO_SPEECH_RELEASE_FRAMES,
+            speech_release_gain=config.VIDEO_AUDIO_SPEECH_RELEASE_GAIN,
+        )
+        audio_embedding = _sharpen_embedding_transitions(
+            audio_embedding,
+            speech_array,
+            sr=config.VIDEO_SAMPLE_RATE,
+            fps=config.VIDEO_FPS,
+            threshold_rms=config.VIDEO_AUDIO_SPEECH_RMS_THRESHOLD,
+            delta_gain=config.VIDEO_AUDIO_SPEECH_DELTA_GAIN,
+            ema_alpha=config.VIDEO_AUDIO_SPEECH_DELTA_EMA_ALPHA,
         )
         emb_path = os.path.join(tmp_dir, "audio_emb.pt")
         torch.save(audio_embedding, emb_path)

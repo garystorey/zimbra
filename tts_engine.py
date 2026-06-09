@@ -27,6 +27,9 @@ SAMPLE_RATE = 24000
 # Crossfade duration in seconds for stitching chunks
 CROSSFADE_SECONDS = 0.05  # 50ms overlap
 
+# Number of discrete loading steps reported during model load
+_TTS_LOAD_STEPS = 5  # locate, voice encoder, T3, S3Gen, tokenizer+conds
+
 
 # ---------------------------------------------------------------------------
 # Pause tag parsing
@@ -358,11 +361,20 @@ class TTSEngine:
     def is_loaded(self):
         return self._loaded and self.model is not None
 
-    def load_model(self):
-        """Load Chatterbox Turbo model. Downloads weights on first call."""
+    def load_model(self, progress_callback=None):
+        """Load Chatterbox Turbo model. Downloads weights on first call.
+
+        Args:
+            progress_callback: Optional callable(completed, total, description)
+                for incremental progress reporting during loading.
+        """
         if self.is_loaded:
             logger.info("Chatterbox Turbo already loaded")
             return
+
+        def _progress(step, desc):
+            if progress_callback is not None:
+                progress_callback(step, _TTS_LOAD_STEPS, desc)
 
         logger.info("Loading Chatterbox Turbo model...")
         start = time.time()
@@ -374,9 +386,80 @@ class TTSEngine:
             perth.PerthImplicitWatermarker = perth.DummyWatermarker
             logger.info("perth native watermarker unavailable, using DummyWatermarker")
 
-        from chatterbox.tts_turbo import ChatterboxTurboTTS
+        from pathlib import Path
+        from safetensors.torch import load_file
+        from huggingface_hub import snapshot_download
+        from transformers import AutoTokenizer
+        from chatterbox.tts_turbo import ChatterboxTurboTTS, Conditionals, REPO_ID
+        from chatterbox.models.t3 import T3
+        from chatterbox.models.s3gen import S3Gen
+        from chatterbox.models.voice_encoder import VoiceEncoder
+        from chatterbox.models.t3.modules.t3_config import T3Config
 
-        self.model = ChatterboxTurboTTS.from_pretrained(device=self.device)
+        # Step 1: locate / download model files
+        _progress(0, "Locating model files")
+        logger.info("  Locating Chatterbox Turbo model files...")
+        local_path = snapshot_download(
+            repo_id=REPO_ID,
+            token=os.getenv("HF_TOKEN") or True,
+            allow_patterns=["*.safetensors", "*.json", "*.txt", "*.pt", "*.model"],
+        )
+        ckpt_dir = Path(local_path)
+
+        map_location = torch.device("cpu") if self.device in ("cpu", "mps") else None
+
+        # Step 2: load voice encoder
+        _progress(1, "Loading voice encoder")
+        logger.info("  Loading voice encoder...")
+        ve = VoiceEncoder()
+        ve.load_state_dict(load_file(ckpt_dir / "ve.safetensors"))
+        ve.to(self.device).eval()
+
+        # Step 3: load T3 model
+        _progress(2, "Loading T3 model")
+        logger.info("  Loading T3 model...")
+        hp = T3Config(text_tokens_dict_size=50276)
+        hp.llama_config_name = "GPT2_medium"
+        hp.speech_tokens_dict_size = 6563
+        hp.input_pos_emb = None
+        hp.speech_cond_prompt_len = 375
+        hp.use_perceiver_resampler = False
+        hp.emotion_adv = False
+        t3 = T3(hp)
+        t3_state = load_file(ckpt_dir / "t3_turbo_v1.safetensors")
+        if "model" in t3_state.keys():
+            t3_state = t3_state["model"][0]
+        t3.load_state_dict(t3_state)
+        del t3.tfmr.wte
+        t3.to(self.device).eval()
+
+        # Step 4: load S3Gen model
+        _progress(3, "Loading S3Gen model")
+        logger.info("  Loading S3Gen model...")
+        s3gen = S3Gen(meanflow=True)
+        s3gen.load_state_dict(
+            load_file(ckpt_dir / "s3gen_meanflow.safetensors"), strict=True
+        )
+        s3gen.to(self.device).eval()
+
+        # Step 5: load tokenizer and voice conditionals
+        _progress(4, "Loading tokenizer & conditionals")
+        logger.info("  Loading tokenizer & voice conditionals...")
+        tokenizer = AutoTokenizer.from_pretrained(ckpt_dir)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        if len(tokenizer) != 50276:
+            logger.warning(f"Tokenizer len {len(tokenizer)} != 50276")
+        conds = None
+        builtin_voice = ckpt_dir / "conds.pt"
+        if builtin_voice.exists():
+            conds = Conditionals.load(builtin_voice, map_location=map_location).to(
+                self.device
+            )
+
+        self.model = ChatterboxTurboTTS(
+            t3, s3gen, ve, tokenizer, self.device, conds=conds
+        )
 
         elapsed = time.time() - start
         logger.info(f"Chatterbox Turbo loaded in {elapsed:.1f}s (device={self.device})")

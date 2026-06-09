@@ -128,6 +128,23 @@ VIDEO_GGUF_MOTION_FRAME = 9  # 0.36s overlap, 11% frozen frames — best lip syn
 VIDEO_GGUF_LORA_SAMPLE_STEPS = 6  # 6 steps for better quality. LightX2V supports 4-6; 4 was too soft/blurry. 6 matches non-GGUF LoRA default.
 VIDEO_GGUF_LORA_AUDIO_GUIDE_SCALE = 1.0  # 1.0 = 1 pass/step (skip_cfg). Keeps render time within benchmarks. CLI --audio-cfg 2.0 for stronger lip sync at 2x render time.
 VIDEO_GGUF_SECS_PER_STEP = 34  # Measured ~33.7s/pass at 1-pass, ~35.8s at 2-pass. I2V rank-64 LoRA, 22+18 swapped (run_20260221_223335)
+VIDEO_AUDIO_NOISE_FLOOR = 0  # Phase 27 REVERTED: Wav2Vec2FeatureExtractor global normalization makes 1e-3 noise effectively zero after normalization. Disabled.
+VIDEO_AUDIO_SILENCE_ECHO_GAIN = 0.12  # Phase 29: during silence, add 12% interpolated echo from neighboring speech frames before wav2vec2 encoding (output audio unaffected). In-distribution (real speech waveforms) and smoother than nearest-frame hold copies. Set to 0 to disable.
+VIDEO_AUDIO_SPEECH_EMB_GAIN = 1.12  # Phase 30: scale wav2vec2 embeddings on voiced frames only (no extra denoising pass) to improve mouth responsiveness.
+VIDEO_AUDIO_SPEECH_ONSET_GAIN = 1.10  # Phase 32 tuned: additional gain on first voiced frame after silence to improve articulation pickup after pauses while reducing occasional overshoot seen at 1.12. 1.0 disables.
+# Phase 33 decision (A/B/C on 2026-04-20): keep Run B defaults fixed.
+# Do not routinely retune these values; only revisit if a clear quality regression appears.
+VIDEO_AUDIO_SPEECH_RELEASE_FRAMES = 2  # Phase 33: apply a short gain decay on the first silent frames after voiced speech (2 frames ≈ 80ms at 25fps). 0 disables.
+VIDEO_AUDIO_SPEECH_RELEASE_GAIN = 1.06  # Phase 33 tuned default: initial post-speech tail gain before linear decay to 1.0. 1.0 disables.
+VIDEO_AUDIO_SPEECH_RMS_THRESHOLD = (
+    0.005  # Speech-frame detector threshold (RMS on 40ms video-aligned windows).
+)
+# Phase 31: phoneme-transition sharpening (temporal unsharp-mask on voiced frames).
+# Adds delta_gain * (emb[t] - ema[t-1]) on voiced frames only. No extra denoising
+# pass — improves mouth-to-phoneme crispness without doubling runtime. Set
+# VIDEO_AUDIO_SPEECH_DELTA_GAIN to 0 to disable.
+VIDEO_AUDIO_SPEECH_DELTA_GAIN = 0.15
+VIDEO_AUDIO_SPEECH_DELTA_EMA_ALPHA = 0.35  # ~3-frame effective baseline window
 VIDEO_GGUF_ACTIVATION_RESERVE = 8.5  # GiB — 81-frame activations need more headroom than 41-frame. Auto-tunes to ~22 persistent + ~18 swapped.
 
 # Per-chunk overhead (seconds) — VAE decode + block offload/restore round-trip.

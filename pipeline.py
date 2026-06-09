@@ -27,7 +27,12 @@ from rich.progress import (
 import config
 import utils
 import model_manager
-from tts_engine import TTSEngine, count_tts_chunks, _split_script_to_segments
+from tts_engine import (
+    TTSEngine,
+    count_tts_chunks,
+    _split_script_to_segments,
+    _TTS_LOAD_STEPS,
+)
 from video_engine import VideoEngine
 
 logger = logging.getLogger(__name__)
@@ -263,9 +268,17 @@ class Pipeline:
 
             with _make_progress(console) as progress:
                 if _text_chunks > 0:
-                    load_task = progress.add_task("Loading TTS model", total=None)
-                    self.tts_engine.load_model()
-                    progress.update(load_task, total=1, completed=1)
+                    load_task = progress.add_task(
+                        "Loading TTS model", total=_TTS_LOAD_STEPS
+                    )
+
+                    def _tts_load_progress(step, total, desc):
+                        progress.update(load_task, completed=step, total=total)
+
+                    self.tts_engine.load_model(progress_callback=_tts_load_progress)
+                    progress.update(
+                        load_task, completed=_TTS_LOAD_STEPS, total=_TTS_LOAD_STEPS
+                    )
 
                 audio_label = (
                     "Generating audio" if _text_chunks > 0 else "Assembling audio"
