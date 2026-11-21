@@ -1,11 +1,4 @@
-[s:.5] The doctor said, "Take this pill every day for the rest of your life." [s:1]
-I said, "But there are only four pills." [s:1]
-He said, "Exactly." 
-[s:2]
-I told my wife I was man enough to admit when I’m wrong. [s:1]
-She said, "You’re wrong."[s:1]
-I said, "I know." 
-[s:2]
-I told my suitcases there would be no vacation this year.[s:1.5]
-Now I’m dealing with emotional baggage. [s:1.5]
-Like and subscribe![s:1]
+[s:0.5] I saw my wife, slightly drunk, yelling at the TV. "Dont go in there! Dont go in the church, you moron!"  [s:2] She was watching our wedding video again.
+[s:2] I asked my wife "So, do you think the cup is half full or half empty?" And you know what she said? [s:2] "Please for the love of God, could you stop wearing my bras!"
+[s:2] I just watched a documentary on marijuana.[s:2.5] I think all documentaries should be watched this way.
+[s:1.25] ${like.mp3} [s:0.5]

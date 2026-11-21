@@ -74,9 +74,9 @@ DEFAULT_FPS = 24
 # Chatterbox Turbo defaults: temp=0.8, top_k=1000, top_p=0.95, rep_penalty=1.2.
 # Too-restrictive settings (low top_k/top_p) cause truncation and hallucination
 # because the model can't find valid next tokens and hits early EOS or loops.
-TTS_TEMPERATURE = 0.7
-TTS_TOP_K = 150
-TTS_TOP_P = 0.92
+TTS_TEMPERATURE = 0.6
+TTS_TOP_K = 40
+TTS_TOP_P = 0.8
 TTS_REPETITION_PENALTY = 1.2
 
 # Run timestamp — set once at startup by setup_logging(), shared across all

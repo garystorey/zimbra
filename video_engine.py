@@ -38,6 +38,14 @@ logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore")
 
 
+def _preview_text(text, limit=180):
+    """Return a compact one-line preview for logs."""
+    text = " ".join(str(text).split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
 # ---------------------------------------------------------------------------
 # Vendor path setup — add InfiniteTalk source to sys.path
 # ---------------------------------------------------------------------------
@@ -437,7 +445,11 @@ class VideoEngine:
             context_null.cpu(),
         )
         self._cached_prompt = prompt
-        logger.info("  T5 text embeddings pre-encoded and cached")
+        logger.info(
+            "  T5 text embeddings pre-encoded and cached for animation prompt (%d chars): %s",
+            len(prompt),
+            _preview_text(prompt),
+        )
 
     def load_model(self, progress_callback=None):
         """Load InfiniteTalk pipeline. Downloads weights on first call.
@@ -699,11 +711,18 @@ class VideoEngine:
         motion_frame = config.VIDEO_GGUF_MOTION_FRAME
         frame_num = config.VIDEO_GGUF_FRAME_NUM
         prompt = animation_prompt if animation_prompt else self._PROMPT
+        logger.info(
+            "Using animation prompt (%d chars): %s",
+            len(prompt),
+            _preview_text(prompt),
+        )
 
         # Re-encode text embeddings if prompt changed from what was pre-cached
         if self._cached_prompt != prompt:
             logger.info("  Animation prompt differs from cached — re-encoding T5...")
             self._pre_encode_text(prompt)
+        else:
+            logger.info("  Animation prompt matches cached T5 embeddings")
 
         if self._lora_applied:
             sample_steps = sample_steps or config.VIDEO_GGUF_LORA_SAMPLE_STEPS

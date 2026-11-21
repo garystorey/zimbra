@@ -233,13 +233,15 @@ def _resolve_animation(animation_arg):
         # Fall back to default file
         path = config.DEFAULT_ANIMATION_FILE
         if os.path.isfile(path):
-            return open(path, "r", encoding="utf-8").read().strip()
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read().strip()
         # Hardcoded fallback if file is missing
         return "A person is talking naturally with expressive facial movements and gestures."
 
     # If it looks like a file path and exists, read it
     if os.path.isfile(animation_arg):
-        return open(animation_arg, "r", encoding="utf-8").read().strip()
+        with open(animation_arg, "r", encoding="utf-8") as f:
+            return f.read().strip()
 
     # Otherwise treat as inline text
     return animation_arg.strip()

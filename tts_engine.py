@@ -529,6 +529,15 @@ class TTSEngine:
         if voice_ref_path is not None:
             kwargs["audio_prompt_path"] = voice_ref_path
 
+        logger.debug(
+            "    TTS sampling: temp=%.2f, top_k=%s, top_p=%.2f, rep_penalty=%.2f, voice_ref=%s",
+            kwargs["temperature"],
+            kwargs["top_k"],
+            kwargs["top_p"],
+            kwargs["repetition_penalty"],
+            os.path.basename(voice_ref_path) if voice_ref_path else "builtin",
+        )
+
         best_audio = None
         best_diff = float("inf")
 
@@ -652,6 +661,7 @@ class TTSEngine:
         wav_ref = None
         if voice_ref_path is not None:
             wav_ref = utils.ensure_wav_format(voice_ref_path)
+            logger.info("Using voice reference: %s", wav_ref)
 
         # Auto-generate output path if not provided
         if output_path is None:
